@@ -1,0 +1,73 @@
+# ==========================================
+# Dependencies
+# ==========================================
+node_modules/
+package-lock.json.bak
+.pnpm-store/
+
+# ==========================================
+# Expo & Metro
+# ==========================================
+.expo/
+.expo-shared/
+web-build/
+dist/
+.metro-health-check*
+
+# ==========================================
+# Android Native Build & Cache
+# ==========================================
+android/.gradle/
+android/app/build/
+android/build/
+android/.cxx/
+android/local.properties
+*.iml
+*.hprof
+.idea/
+.gradle/
+
+# ==========================================
+# Keystores & Credentials (Security)
+# ==========================================
+*.keystore
+*.jks
+# Allow default debug keystore for development builds
+!android/app/debug.keystore
+
+# ==========================================
+# Compiled Bundles & Binaries
+# ==========================================
+*.apk
+*.aab
+*.jsbundle
+*.bundle
+
+# ==========================================
+# Temporary, Scratch & Backup Files
+# ==========================================
+*.bak*
+*.backup*
+*.new*
+*.patch
+scratch_*.js
+refactor.js
+*.tmp
+*.log
+
+# ==========================================
+# Environment Variables & Secrets
+# ==========================================
+.env
+.env.*
+!.env.example
+
+# ==========================================
+# OS & Editor Metadata
+# ==========================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
