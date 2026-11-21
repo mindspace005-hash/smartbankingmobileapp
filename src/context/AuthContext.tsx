@@ -119,6 +119,12 @@ interface AuthContextType {
   }) => Promise<CollectionRecord>;
 }
 
+const parsePositiveId = (value?: string | number | null): number | null => {
+  if (value === undefined || value === null) return null;
+  const parsed = parseInt(String(value).replace(/^[a-z_]+/i, ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -136,7 +142,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [serverDashboardSummary, setServerDashboardSummary] = useState<DashboardSummary | null>(null);
 
   const fetchLockStatus = async (agentIdInput?: string | number): Promise<RemittanceStatus | null> => {
-    const rawId = (agentIdInput || currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')) || '1').toString().replace('agt_', '');
+    const rawId = parsePositiveId(agentIdInput ?? currentUser.agentId ?? (await AsyncStorage.getItem('AGENT_ID')));
+    if (!rawId) return null;
     try {
       const res = await apiClient.get(`/api/PigmyApp/CollectionStatus?agentId=` + rawId);
       if (res.data) {
@@ -272,7 +279,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return mergedCollections;
   };
   const refreshAgentData = async () => {
-    const rawAgentId = currentUser.agentId ? currentUser.agentId.replace('agt_', '') : (await AsyncStorage.getItem('AGENT_ID') || '1');
+    const resolvedAgentId = parsePositiveId(currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')));
+    if (!resolvedAgentId) return;
+    const rawAgentId = String(resolvedAgentId);
     setIsLoadingAccounts(true);
     try {
       await Promise.allSettled([
@@ -735,6 +744,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const account = accounts.find((a) => a.id === accountId);
     if (!account) throw new Error('Account not found');
 
+    const rawAccountId = parsePositiveId(accountId);
+    const rawAgentId = parsePositiveId(agentId || currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')));
+    if (!rawAccountId) throw new Error('वैध खाते क्रमांक (Account ID) आढळला नाही.');
+    if (!rawAgentId) throw new Error('एजंट आयडी उपलब्ध नाही. कृपया पुन्हा लॉगिन करा.');
+
     const now = new Date();
     const timestampStr = now.toLocaleDateString() + ' ' + now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const receiptNo = `RC-${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}-${Math.floor(100 + Math.random() * 900)}`;
@@ -794,9 +808,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // 3. Try to sync immediately
     try {
-      const rawAccountId = parseInt(accountId.replace('acc_', ''), 10) || 5; 
-      const rawAgentId = parseInt(agentId.replace('agt_', ''), 10) || 2;
-
       await apiClient.post('/api/collections', {
         accountId: rawAccountId,
         pigmyAccountId: rawAccountId,
@@ -835,7 +846,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     customerIdInput: string | number,
     hintAccount?: PigmiAccount
   ): Promise<CustomerDoorstepProfile> => {
-    const rawAgentId = (currentUser.agentId || '1').toString().replace('agt_', '');
+    const resolvedAgentId = parsePositiveId(currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')));
+    const rawAgentId = resolvedAgentId ? String(resolvedAgentId) : '';
     const inputStr = (customerIdInput ?? '').toString();
 
     // 1. Resolve actual CustomerID
@@ -862,7 +874,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // 2. Try API call with resolved customerId
     try {
-      if (cleanCustId && cleanCustId !== '0') {
+      if (rawAgentId && cleanCustId && cleanCustId !== '0') {
         const res = await apiClient.get(`/api/PigmyApp/customers/${cleanCustId}/doorstep-profile?agentId=${rawAgentId}`);
         if (res.data && (res.data.pigmyAccounts || res.data.loanAccounts || res.data.savingAccounts || res.data.rdAccounts)) {
           // Safety guard: If we have an expected CIF, verify match to prevent loading wrong customer
@@ -877,9 +889,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const exists = res.data.pigmyAccounts?.some((p: any) => 
                 p.accountId === effectiveAccIdNum || p.accountNo === effectiveAcc.accountNumber
               );
-              if (!exists && res.data.pigmyAccounts) {
+              if (!exists && res.data.pigmyAccounts && Number.isFinite(effectiveAccIdNum) && effectiveAccIdNum > 0) {
                 res.data.pigmyAccounts.unshift({
-                  accountId: effectiveAccIdNum || 1,
+                  accountId: effectiveAccIdNum,
                   accountNo: effectiveAcc.accountNumber,
                   productType: 'PIGMY',
                   productTitle: 'दैनिक ठेव (Pigmy)',
@@ -914,19 +926,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const address = fallbackCustomer?.address || (matchedPigmy[0] as any)?.customerAddress || '';
 
     return {
-      customerId: cleanCustId || targetCustomer?.customerId || '1',
+      customerId: cleanCustId || targetCustomer?.customerId || '',
       cifNo: fallbackCustomer?.cifNo || matchedPigmy[0]?.cifNo || `CIF-${cleanCustId}`,
       customerName: fallbackCustomer?.customerName || matchedPigmy[0]?.customerName || 'ग्राहक (Customer)',
       mobileNo,
       address,
-      pigmyAccounts: matchedPigmy.map(p => ({
-        accountId: parseInt(p.id.replace('acc_', ''), 10) || 1,
-        accountNo: p.accountNumber,
-        productType: 'PIGMY',
-        productTitle: 'दैनिक ठेव (Pigmy)',
-        schemeName: 'दैनंदिन पिग्मी योजना',
-        currentBalance: p.currentBalance,
-        targetAmount: p.dailyTargetAmount || 100,
+      pigmyAccounts: matchedPigmy
+        .map(p => ({ p, parsedId: parsePositiveId(p.id) }))
+        .filter((entry): entry is { p: PigmiAccount; parsedId: number } => entry.parsedId !== null)
+        .map(({ p, parsedId }) => ({
+          accountId: parsedId,
+          accountNo: p.accountNumber,
+          productType: 'PIGMY',
+          productTitle: 'दैनिक ठेव (Pigmy)',
+          schemeName: 'दैनंदिन पिग्मी योजना',
+          currentBalance: p.currentBalance,
+          targetAmount: p.dailyTargetAmount || 100,
         isAgentAllowed: true,
         oldAccountNo: p.oldAccountNo,
         status: p.status
@@ -968,8 +983,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       longitude
     } = params;
 
-    const rawAgentId = parseInt((currentUser.agentId || '1').toString().replace('agt_', ''), 10) || 1;
-    const rawAccountId = typeof accountId === 'string' ? (parseInt(accountId.replace(/^[a-z_]+/, ''), 10) || 1) : accountId;
+    const rawAgentId = parsePositiveId(currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')));
+    const rawAccountId = parsePositiveId(accountId);
+    if (!rawAgentId) {
+      throw new Error('एजंट आयडी उपलब्ध नाही. कृपया पुन्हा लॉगिन करा.');
+    }
+    if (!rawAccountId) {
+      throw new Error('वैध खाते क्रमांक (Account ID) आढळला नाही.');
+    }
 
     const uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
       const r = (Math.random() * 16) | 0;
@@ -1358,7 +1379,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: true, message: 'All collections are already synced.' };
       }
 
-      const rawAgentId = parseInt((currentUser?.agentId || agentId || '1').replace('agt_', ''), 10) || 1;
+      const rawAgentId = parsePositiveId(currentUser?.agentId || agentId || (await AsyncStorage.getItem('AGENT_ID')));
+      if (!rawAgentId) {
+        return { success: false, message: 'एजंट आयडी उपलब्ध नाही. कृपया पुन्हा लॉगिन करा.' };
+      }
       const syncedIds: string[] = [];
       const updatedReceiptMap: { [id: string]: { receiptNo?: string; newBalance?: number } } = {};
 
@@ -1370,24 +1394,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // 1. Bulk sync PIGMY items only (preserving original collectionTimestamp)
       if (pigmyItems.length > 0) {
         try {
-          const apiItems = pigmyItems.map(item => {
-            const matchedAcc = accounts.find(a => a.id === item.accountId || a.accountNumber === item.accountNumber);
-            return {
-              pigmyAccountId: parseInt(String(item.accountId).replace('acc_', ''), 10) || 1,
-              accountNo: item.accountNumber || matchedAcc?.accountNumber || '',
-              oldAccountNo: item.oldAccountNo || matchedAcc?.oldAccountNo || '',
-              collectionAmount: item.amount,
-              collectionDate: item.collectionTimestamp || new Date().toISOString(),
-              receiptNo: item.receiptNo,
-              transactionId: item.transactionId
-            };
-          });
+          const validPigmyPairs = pigmyItems
+            .map(item => ({ item, pigmyAccountId: parsePositiveId(item.accountId) }))
+            .filter((x): x is { item: CollectionRecord; pigmyAccountId: number } => x.pigmyAccountId !== null);
+          if (validPigmyPairs.length > 0) {
+            const apiItems = validPigmyPairs.map(({ item, pigmyAccountId }) => {
+              const matchedAcc = accounts.find(a => a.id === item.accountId || a.accountNumber === item.accountNumber);
+              return {
+                pigmyAccountId,
+                accountNo: item.accountNumber || matchedAcc?.accountNumber || '',
+                oldAccountNo: item.oldAccountNo || matchedAcc?.oldAccountNo || '',
+                collectionAmount: item.amount,
+                collectionDate: item.collectionTimestamp || new Date().toISOString(),
+                receiptNo: item.receiptNo,
+                transactionId: item.transactionId
+              };
+            });
 
-          await apiClient.post('/api/PigmyApp/BulkCollection', {
-            agentId: rawAgentId,
-            items: apiItems
-          });
-          pigmyItems.forEach(p => syncedIds.push(p.id));
+            await apiClient.post('/api/PigmyApp/BulkCollection', {
+              agentId: rawAgentId,
+              items: apiItems
+            });
+            validPigmyPairs.forEach(({ item }) => syncedIds.push(item.id));
+          }
         } catch (bulkErr: any) {
           const bMsg = bulkErr?.response?.data?.message || bulkErr?.response?.data || bulkErr?.message;
           if (bMsg) lastErrorMsg = typeof bMsg === 'string' ? bMsg : (bMsg.message || JSON.stringify(bMsg));
@@ -1400,7 +1429,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (individualItems.length > 0) {
         for (const item of individualItems) {
           try {
-            const rawAccountId = parseInt(String(item.accountId).replace(/^[a-z_]+/, ''), 10) || 1;
+            const rawAccountId = parsePositiveId(item.accountId);
+            if (!rawAccountId) {
+              lastErrorMsg = `अवैध खाते क्रमांक (${item.accountNumber || item.accountId})`;
+              continue;
+            }
             const originalIsoDate = item.collectionTimestamp || new Date().toISOString();
             const uuid = item.syncReferenceId || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
               const r = (Math.random() * 16) | 0;
