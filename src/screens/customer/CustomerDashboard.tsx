@@ -1,400 +1,508 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
-  TextInput,
+  RefreshControl,
+  Modal,
+  ActivityIndicator,
 } from 'react-native';
-import { useThemeColors, ThemeColors } from '../../context/ThemeContext';
+import { LinearGradient } from 'expo-linear-gradient';
+import {
+  PiggyBank,
+  Wallet,
+  CalendarClock,
+  Landmark,
+  HandCoins,
+  BookOpen,
+  X,
+  Info,
+  RefreshCw,
+} from 'lucide-react-native';
+import { useThemeColors } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
 import { StatCard } from '../../components/StatCard';
+import { StatusPill } from '../../components/ui/StatusPill';
+import { SkeletonCard } from '../../components/ui/SkeletonCard';
+import { SectionHeader } from '../../components/ui/AppCard';
 import { CollectionRecord } from '../../types';
+import { PRODUCT_THEME, RADIUS, TABULAR_NUMS } from '../../theme/tokens';
+import { triggerLightHaptic } from '../../utils/haptics';
 
 interface CustomerDashboardProps {
   onSelectReceipt: (receipt: CollectionRecord) => void;
 }
 
-export const CustomerDashboard: React.FC<CustomerDashboardProps> = ({ onSelectReceipt }) => {
+export const CustomerDashboard: React.FC<CustomerDashboardProps> = () => {
   const { colors } = useThemeColors();
-  const styles = React.useMemo(() => getStyles(colors), [colors]);
-  const { accounts, collections, addCollectionRecord, currentUser } = useAuth();
+  const { currentUser, fetchCustomerPortalOverview, fetchCustomerAccountPassbook } = useAuth();
 
-  const customerAccount =
-    accounts.find((a) => a.accountNumber === currentUser.accountNumber) || accounts[0];
-  const myCollections = collections.filter((c) => c.accountId === customerAccount.id);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [summary, setSummary] = useState<any>(null);
+  const [portalAccounts, setPortalAccounts] = useState<{
+    pigmyAccounts: any[];
+    savingAccounts: any[];
+    rdAccounts: any[];
+    fdAccounts: any[];
+    loanAccounts: any[];
+  }>({
+    pigmyAccounts: [],
+    savingAccounts: [],
+    rdAccounts: [],
+    fdAccounts: [],
+    loanAccounts: [],
+  });
 
-  const [selfPayAmount, setSelfPayAmount] = useState<string>(customerAccount.dailyTargetAmount.toString());
-  const [showSelfPay, setShowSelfPay] = useState<boolean>(false);
+  const [passbookLoading, setPassbookLoading] = useState(false);
+  const [passbookData, setPassbookData] = useState<{
+    productType: string;
+    accountNo: string;
+    currentBalance: number;
+    transactions: any[];
+  } | null>(null);
 
-  const handleSelfPay = async () => {
-    const amt = parseFloat(selfPayAmount);
-    if (!amt || amt <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid amount to deposit.');
-      return;
-    }
+  const loadData = useCallback(async () => {
+    setError(null);
     try {
-      const receipt = await addCollectionRecord(customerAccount.id, amt, 'UPI', 'Customer Online Self-Deposit');
-      setShowSelfPay(false);
-      Alert.alert(
-        'Online Deposit Successful! 🎉',
-        `₹${amt} added to your Pigmi account.`,
-        [{ text: 'View Receipt', onPress: () => onSelectReceipt(receipt) }, { text: 'OK' }]
-      );
+      const data = await fetchCustomerPortalOverview();
+      setSummary(data.summary);
+      setPortalAccounts({
+        pigmyAccounts: data.accounts?.pigmyAccounts || [],
+        savingAccounts: data.accounts?.savingAccounts || [],
+        rdAccounts: data.accounts?.rdAccounts || [],
+        fdAccounts: data.accounts?.fdAccounts || [],
+        loanAccounts: data.accounts?.loanAccounts || [],
+      });
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to record online payment');
+      setError(err?.response?.data?.message || err?.message || 'खाते माहिती लोड करताना अडचण आली.');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [fetchCustomerPortalOverview]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const openPassbook = async (productType: string, accountId: number) => {
+    if (productType === 'FD') return;
+    triggerLightHaptic();
+    setPassbookLoading(true);
+    setPassbookData({ productType, accountNo: '', currentBalance: 0, transactions: [] });
+    try {
+      const pb = await fetchCustomerAccountPassbook(productType, accountId);
+      setPassbookData(pb);
+    } catch {
+      setPassbookData(null);
+    } finally {
+      setPassbookLoading(false);
     }
   };
 
-  const progressPercent = Math.min(
-    100,
-    Math.round((customerAccount.currentBalance / (customerAccount.dailyTargetAmount * 365)) * 100)
-  );
+  const totalDeposits = Number(summary?.totalSavingsAndDeposits ?? 0);
+  const totalLoans = Number(summary?.totalLoanOutstanding ?? 0);
+  const counts = summary?.counts || { pigmy: 0, saving: 0, rd: 0, fd: 0, loan: 0 };
+
+  const allAccounts = [
+    ...portalAccounts.pigmyAccounts,
+    ...portalAccounts.savingAccounts,
+    ...portalAccounts.rdAccounts,
+    ...portalAccounts.fdAccounts,
+    ...portalAccounts.loanAccounts,
+  ];
+
+  const getProductVisual = (type: string) => {
+    switch (type) {
+      case 'PIGMY':
+        return { icon: <PiggyBank size={19} color={PRODUCT_THEME.PIGMY.accent} />, bg: PRODUCT_THEME.PIGMY.bg, accent: PRODUCT_THEME.PIGMY.accent };
+      case 'SAVING':
+        return { icon: <Wallet size={19} color={PRODUCT_THEME.SAVING.accent} />, bg: PRODUCT_THEME.SAVING.bg, accent: PRODUCT_THEME.SAVING.accent };
+      case 'RD':
+        return { icon: <CalendarClock size={19} color={PRODUCT_THEME.RD.accent} />, bg: PRODUCT_THEME.RD.bg, accent: PRODUCT_THEME.RD.accent };
+      case 'LOAN':
+        return { icon: <HandCoins size={19} color={PRODUCT_THEME.LOAN.accent} />, bg: PRODUCT_THEME.LOAN.bg, accent: PRODUCT_THEME.LOAN.accent };
+      default:
+        return { icon: <Landmark size={19} color={colors.primaryDark} />, bg: colors.infoBg, accent: colors.primaryDark };
+    }
+  };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.sectionHeader}>My Pigmi Passbook</Text>
-
-      {/* Savings Card */}
-      <View style={styles.savingsCard}>
-        <View style={styles.savingsCardTop}>
-          <View>
-            <Text style={styles.savingsTag}>PIGMI DAILY SAVINGS</Text>
-            <Text style={styles.savingsAccNo}>{customerAccount.accountNumber}</Text>
-          </View>
-          <View style={styles.activeBadge}>
-            <View style={styles.activeDot} />
-            <Text style={styles.activeText}>{customerAccount.status}</Text>
-          </View>
-        </View>
-
-        <Text style={styles.balanceLabel}>Current Balance</Text>
-        <Text style={styles.balanceValue}>₹{customerAccount.currentBalance.toLocaleString('en-IN')}</Text>
-
-        {/* Progress bar */}
-        <View style={styles.progressWrap}>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${progressPercent}%` }]} />
-          </View>
-          <Text style={styles.progressLabel}>{progressPercent}% of yearly goal</Text>
-        </View>
-
-        <View style={styles.savingsFooter}>
-          <View style={styles.footerItem}>
-            <Text style={styles.footerLabel}>Daily</Text>
-            <Text style={styles.footerValue}>₹{customerAccount.dailyTargetAmount}</Text>
-          </View>
-          <View style={styles.footerDivider} />
-          <View style={styles.footerItem}>
-            <Text style={styles.footerLabel}>Interest</Text>
-            <Text style={styles.footerValue}>{customerAccount.interestRatePercentage}% p.a.</Text>
-          </View>
-          <View style={styles.footerDivider} />
-          <View style={styles.footerItem}>
-            <Text style={styles.footerLabel}>Agent</Text>
-            <Text style={styles.footerValue}>{customerAccount.agentName}</Text>
-          </View>
-        </View>
-      </View>
-
-      {/* Other Accounts Grid */}
-      <Text style={[styles.sectionHeader, { marginTop: 4 }]}>Other Accounts</Text>
-      <View style={styles.statsGrid}>
-        <StatCard title="Fixed Deposit" value="₹50,000" subtitle="7.5% p.a." accentColor="#10B981" icon="🏦" />
-        <StatCard title="Recurring Dep." value="₹12,400" subtitle="6.8% p.a." accentColor="#F59E0B" icon="⏳" />
-        <StatCard title="Personal Loan" value="₹1.2L" subtitle="11% p.a." accentColor="#EF4444" icon="💸" />
-        <StatCard title="Savings A/C" value="₹8,900" subtitle="3.5% p.a." accentColor="#3B82F6" icon="📥" />
-      </View>
-
-      {/* UPI Pay Banner */}
-      <TouchableOpacity
-        style={styles.payBanner}
-        onPress={() => setShowSelfPay(!showSelfPay)}
-        activeOpacity={0.8}
+    <View style={[styles.root, { backgroundColor: colors.background }]}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              loadData();
+            }}
+          />
+        }
       >
-        <View>
-          <Text style={styles.payBannerTitle}>📱 Online Self-Deposit via UPI</Text>
-          <Text style={styles.payBannerSub}>Deposit directly if collector missed today</Text>
-        </View>
-        <Text style={styles.payBannerArrow}>{showSelfPay ? '▲' : '▼'}</Text>
-      </TouchableOpacity>
-
-      {showSelfPay && (
-        <View style={styles.selfPayCard}>
-          <Text style={styles.selfPayLabel}>Enter Deposit Amount (₹)</Text>
-          <View style={styles.inputField}>
-            <Text style={styles.inputPrefix}>₹</Text>
-            <TextInput
-              style={styles.payInput}
-              value={selfPayAmount}
-              onChangeText={setSelfPayAmount}
-              keyboardType="numeric"
-              placeholderTextColor="#9CA3AF"
-            />
+        {/* Hero Customer Balance Card */}
+        <LinearGradient
+          colors={colors.gradientColors}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.heroCard}
+        >
+          <View style={styles.heroTopRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.heroTag, { color: colors.headerSubtext }]}>
+                {summary?.branchName || 'KHATEDAR TEST PORTAL'}
+              </Text>
+              <Text style={styles.heroName} numberOfLines={1}>
+                {summary?.customerName || currentUser.name || 'खातेदार'}
+              </Text>
+              <Text style={{ fontSize: 11.5, color: colors.headerSubtext, marginTop: 2 }}>
+                CIF: {summary?.cifNo || currentUser.accountNumber || '-'} • {summary?.mobileNo || currentUser.phone || '-'}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.refreshBtn}
+              onPress={() => {
+                triggerLightHaptic();
+                setRefreshing(true);
+                loadData();
+              }}
+            >
+              <RefreshCw size={15} color="#FFFFFF" />
+            </TouchableOpacity>
           </View>
-          <TouchableOpacity style={styles.confirmBtn} onPress={handleSelfPay}>
-            <Text style={styles.confirmBtnText}>Pay ₹{selfPayAmount} via GPay / PhonePe</Text>
-          </TouchableOpacity>
+
+          <View style={styles.heroStats}>
+            <View style={styles.heroStatCol}>
+              <Text style={[styles.heroStatLabel, { color: colors.headerSubtext }]}>एकूण ठेवी (Deposits)</Text>
+              <Text style={[styles.heroStatValue, TABULAR_NUMS]}>
+                ₹{totalDeposits.toLocaleString('en-IN')}
+              </Text>
+            </View>
+            <View style={styles.heroDivider} />
+            <View style={styles.heroStatCol}>
+              <Text style={[styles.heroStatLabel, { color: colors.headerSubtext }]}>एकूण कर्ज बाकी (Loan)</Text>
+              <Text style={[styles.heroStatValue, TABULAR_NUMS]}>
+                ₹{totalLoans.toLocaleString('en-IN')}
+              </Text>
+            </View>
+          </View>
+        </LinearGradient>
+
+        {/* Product Counts Grid */}
+        <View style={styles.statsGrid}>
+          <StatCard
+            title="पिग्मी / बचत"
+            value={String((counts.pigmy || 0) + (counts.saving || 0))}
+            subtitle={`${counts.pigmy || 0} पिग्मी • ${counts.saving || 0} बचत`}
+            accentColor={colors.primary}
+            iconElement={<PiggyBank size={18} color={colors.primary} />}
+          />
+          <StatCard
+            title="RD / FD व कर्ज"
+            value={String((counts.rd || 0) + (counts.fd || 0) + (counts.loan || 0))}
+            subtitle={`${counts.rd || 0} RD • ${counts.fd || 0} FD • ${counts.loan || 0} कर्ज`}
+            accentColor="#B45309"
+            iconElement={<Landmark size={18} color="#B45309" />}
+          />
         </View>
-      )}
 
-      {/* Passbook */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Digital Passbook</Text>
-        <Text style={styles.cardSub}>Tap any entry to view official digital receipt</Text>
+        {/* Info Banner */}
+        <View style={[styles.infoBanner, { backgroundColor: colors.infoBg, borderColor: colors.border }]}>
+          <Info size={16} color={colors.infoText} />
+          <Text style={{ flex: 1, fontSize: 12, color: colors.infoText, fontWeight: '600' }}>
+            हे तात्पुरते खातेदार टेस्ट पोर्टल (Read-Only) आहे. पासबुक पाहण्यासाठी कोणत्याही खात्यावर टॅप करा.
+          </Text>
+        </View>
 
-        {myCollections.map((rec) => (
-          <TouchableOpacity
-            key={rec.id}
-            style={styles.passbookRow}
-            onPress={() => onSelectReceipt(rec)}
-            activeOpacity={0.65}
-          >
-            <View style={styles.passbookIconCircle}>
-              <Text style={{ fontSize: 18 }}>🐷</Text>
-            </View>
-            <View style={styles.passbookDetails}>
-              <Text style={styles.recNo}>{rec.receiptNo}</Text>
-              <Text style={styles.recAgent}>Collected by {rec.agentName}</Text>
-              <Text style={styles.recTime}>{rec.timestamp}</Text>
-            </View>
-            <View style={styles.passbookRight}>
-              <Text style={styles.creditAmt}>+₹{rec.amount}</Text>
-              <View style={styles.modeTag}>
-                <Text style={styles.modeTagText}>{rec.paymentMode}</Text>
+        <SectionHeader title={`तुमची खाती (${allAccounts.length})`} />
+
+        {loading ? (
+          <SkeletonCard count={4} />
+        ) : error ? (
+          <View style={[styles.emptyCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.dangerText, textAlign: 'center' }}>
+              {error}
+            </Text>
+          </View>
+        ) : allAccounts.length === 0 ? (
+          <View style={[styles.emptyCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={{ fontSize: 13.5, fontWeight: '700', color: colors.textMuted }}>
+              या CIF अंतर्गत कोणतेही सक्रिय खाते आढळले नाही.
+            </Text>
+          </View>
+        ) : (
+          allAccounts.map((acc) => {
+            const vis = getProductVisual(acc.productType);
+            const canOpenPb = acc.productType !== 'FD';
+            return (
+              <TouchableOpacity
+                key={`${acc.productType}_${acc.accountId}`}
+                style={[styles.accCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+                onPress={() => openPassbook(acc.productType, acc.accountId)}
+                activeOpacity={canOpenPb ? 0.78 : 1}
+              >
+                <View style={[styles.accIcon, { backgroundColor: vis.bg }]}>{vis.icon}</View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    <Text style={[styles.accScheme, { color: vis.accent }]} numberOfLines={1}>
+                      {acc.schemeName || acc.productType}
+                    </Text>
+                    <StatusPill label={acc.status || 'Active'} tone={acc.status === 'Active' ? 'success' : 'neutral'} />
+                  </View>
+                  <Text style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+                    A/c: {acc.accountNo} {acc.oldAccountNo ? `• जुना #${acc.oldAccountNo}` : ''}
+                  </Text>
+                  {acc.maturityDate ? (
+                    <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: 1 }}>
+                      मॅच्युरिटी: {acc.maturityDate} • {acc.interestRate}% p.a.
+                    </Text>
+                  ) : null}
+                </View>
+
+                <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={[TABULAR_NUMS, { fontSize: 15, fontWeight: '900', color: colors.text }]}>
+                    ₹{Number(acc.balance || 0).toLocaleString('en-IN')}
+                  </Text>
+                  {canOpenPb && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 3 }}>
+                      <BookOpen size={11} color={colors.primary} />
+                      <Text style={{ fontSize: 10.5, fontWeight: '700', color: colors.primary }}>Passbook</Text>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
+            );
+          })
+        )}
+      </ScrollView>
+
+      {/* Customer Passbook Bottom Sheet */}
+      {passbookData && (
+        <Modal visible={true} animationType="slide" transparent onRequestClose={() => setPassbookData(null)}>
+          <View style={styles.sheetOverlay}>
+            <View style={[styles.sheetContainer, { backgroundColor: colors.card }]}>
+              <View style={styles.sheetHandle} />
+              <View style={styles.sheetHeader}>
+                <View>
+                  <Text style={{ fontSize: 11, fontWeight: '800', color: colors.primary }}>
+                    {passbookData.productType} PASSBOOK
+                  </Text>
+                  <Text style={{ fontSize: 17, fontWeight: '800', color: colors.text }}>
+                    खाते क्र: {passbookData.accountNo || '...'}
+                  </Text>
+                  <Text style={[TABULAR_NUMS, { fontSize: 13, fontWeight: '700', color: colors.successText, marginTop: 2 }]}>
+                    शिल्लक: ₹{Number(passbookData.currentBalance || 0).toLocaleString('en-IN')}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.closeCircle, { backgroundColor: colors.surfaceMuted }]}
+                  onPress={() => setPassbookData(null)}
+                >
+                  <X size={18} color={colors.textSecondary} />
+                </TouchableOpacity>
               </View>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </View>
 
-      {/* Info */}
-      <View style={styles.infoCard}>
-        <Text style={styles.infoTitle}>💡 About Your Pigmi Scheme</Text>
-        <Text style={styles.infoBody}>
-          Daily savings help you build wealth effortlessly. Your funds mature on{' '}
-          <Text style={{ color: colors.primary, fontWeight: '700' }}>{customerAccount.maturityDate}</Text>{' '}
-          with guaranteed returns at {customerAccount.interestRatePercentage}% p.a.
-        </Text>
-      </View>
-    </ScrollView>
+              {passbookLoading ? (
+                <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+                  <ActivityIndicator size="large" color={colors.primary} />
+                </View>
+              ) : (
+                <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+                  {passbookData.transactions.length === 0 ? (
+                    <Text style={{ textAlign: 'center', paddingVertical: 28, color: colors.textMuted }}>
+                      कोणतेही व्यवहार आढळले नाहीत.
+                    </Text>
+                  ) : (
+                    passbookData.transactions.map((tx, idx) => (
+                      <View key={`${tx.id}_${idx}`} style={[styles.pbRow, { borderBottomColor: colors.border }]}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ fontSize: 13, fontWeight: '700', color: colors.text }}>
+                            {tx.narration || tx.type}
+                          </Text>
+                          <Text style={{ fontSize: 11.5, color: colors.textMuted, marginTop: 2 }}>
+                            {tx.date} {tx.reference ? `• ${tx.reference}` : ''}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <Text
+                            style={[
+                              TABULAR_NUMS,
+                              {
+                                fontSize: 14,
+                                fontWeight: '800',
+                                color: tx.drAmount > 0 ? colors.dangerText : colors.successText,
+                              },
+                            ]}
+                          >
+                            {tx.drAmount > 0 ? `-₹${tx.drAmount}` : `+₹${tx.crAmount}`}
+                          </Text>
+                          {tx.balance > 0 ? (
+                            <Text style={[TABULAR_NUMS, { fontSize: 11, color: colors.textMuted }]}>
+                              Bal: ₹{Number(tx.balance).toLocaleString('en-IN')}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    ))
+                  )}
+                </ScrollView>
+              )}
+            </View>
+          </View>
+        </Modal>
+      )}
+    </View>
   );
 };
 
-const getStyles = (colors: ThemeColors) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: 16, paddingBottom: 40 },
-  sectionHeader: {
-    color: colors.primaryDark,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.5,
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+  content: { padding: 14, paddingBottom: 32 },
+  heroCard: {
+    borderRadius: RADIUS.xl,
+    padding: 18,
     marginBottom: 14,
+    elevation: 5,
   },
-
-  // Savings card
-  savingsCard: {
-    backgroundColor: colors.primary,
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 14,
-    shadowColor: colors.primaryDark,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 14,
-    elevation: 8,
-  },
-  savingsCardTop: {
+  heroTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 16,
+    gap: 10,
   },
-  savingsTag: {
-    color: '#C7D2FE',
-    fontSize: 10,
+  heroTag: {
+    fontSize: 10.5,
     fontWeight: '700',
-    letterSpacing: 1,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
-  savingsAccNo: { color: '#FFFFFF', fontSize: 15, fontWeight: '800', marginTop: 3 },
-  activeBadge: {
+  heroName: {
+    color: '#FFFFFF',
+    fontSize: 19,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  refreshBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  heroStats: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-    gap: 5,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: RADIUS.md,
+    padding: 12,
+    marginTop: 14,
   },
-  activeDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#6EE7B7' },
-  activeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
-  balanceLabel: { color: '#C7D2FE', fontSize: 12 },
-  balanceValue: {
-    color: '#FFFFFF',
-    fontSize: 34,
-    fontWeight: '900',
-    marginTop: 4,
-    marginBottom: 16,
+  heroStatCol: {
+    flex: 1,
+    alignItems: 'center',
   },
-  progressWrap: { marginBottom: 16 },
-  progressTrack: {
-    height: 6,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 5,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: '#A5B4FC',
-    borderRadius: 3,
-  },
-  progressLabel: { color: '#C7D2FE', fontSize: 11 },
-  savingsFooter: {
-    flexDirection: 'row',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.2)',
-    paddingTop: 14,
-  },
-  footerItem: { flex: 1 },
-  footerLabel: { color: '#A5B4FC', fontSize: 10, fontWeight: '600' },
-  footerValue: { color: '#FFFFFF', fontSize: 13, fontWeight: '700', marginTop: 3 },
-  footerDivider: {
+  heroDivider: {
     width: 1,
+    height: 30,
     backgroundColor: 'rgba(255,255,255,0.2)',
-    marginHorizontal: 8,
   },
-
-  // Stats Grid
+  heroStatLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  heroStatValue: {
+    color: '#FFFFFF',
+    fontSize: 18,
+    fontWeight: '900',
+    marginTop: 3,
+  },
   statsGrid: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: 10,
+    marginBottom: 10,
+  },
+  infoBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 11,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
     marginBottom: 14,
   },
-
-  // Pay banner
-  payBanner: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 10,
-    borderWidth: 1.5,
-    borderColor: '#C7D2FE',
+  accCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 13,
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    marginBottom: 9,
+  },
+  accIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  accScheme: {
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  emptyCard: {
+    padding: 24,
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.62)',
+    justifyContent: 'flex-end',
+  },
+  sheetContainer: {
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 24,
+    maxHeight: '85%',
+  },
+  sheetHandle: {
+    width: 42,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#CBD5E1',
+    alignSelf: 'center',
+    marginBottom: 14,
+  },
+  sheetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 14,
+  },
+  closeCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pbRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-  },
-  payBannerTitle: { color: '#1E1B4B', fontSize: 15, fontWeight: '700' },
-  payBannerSub: { color: '#9CA3AF', fontSize: 12, marginTop: 2 },
-  payBannerArrow: { color: colors.primaryLight, fontSize: 14, fontWeight: '700' },
-
-  selfPayCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 14,
-    borderWidth: 1.5,
-    borderColor: '#EDE9FE',
-    shadowColor: colors.primaryDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  selfPayLabel: { color: '#6B7280', fontSize: 12, fontWeight: '600', marginBottom: 8 },
-  inputField: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.background,
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: '#EDE9FE',
-    paddingHorizontal: 14,
-    height: 50,
-    marginBottom: 12,
-  },
-  inputPrefix: { color: colors.primary, fontSize: 16, fontWeight: '700', marginRight: 6 },
-  payInput: {
-    flex: 1,
-    color: '#1E1B4B',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  confirmBtn: {
-    backgroundColor: colors.primary,
-    paddingVertical: 13,
-    borderRadius: 12,
-    alignItems: 'center',
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 5,
-  },
-  confirmBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14 },
-
-  // Card
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 18,
-    padding: 18,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#EDE9FE',
-    shadowColor: colors.primaryDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  cardTitle: { color: '#1E1B4B', fontSize: 16, fontWeight: '700' },
-  cardSub: { color: '#9CA3AF', fontSize: 11, marginBottom: 14, marginTop: 3 },
-
-  // Passbook
-  passbookRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 11,
     borderBottomWidth: 1,
-    borderBottomColor: '#F3F4F6',
+    gap: 10,
   },
-  passbookIconCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: colors.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-    borderWidth: 1,
-    borderColor: '#EDE9FE',
-  },
-  passbookDetails: { flex: 1 },
-  recNo: { color: '#1E1B4B', fontSize: 13, fontWeight: '700' },
-  recAgent: { color: '#9CA3AF', fontSize: 11, marginTop: 2 },
-  recTime: { color: '#D1D5DB', fontSize: 10, marginTop: 2 },
-  passbookRight: { alignItems: 'flex-end' },
-  creditAmt: { color: '#10B981', fontSize: 16, fontWeight: '800' },
-  modeTag: {
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 5,
-    marginTop: 4,
-  },
-  modeTagText: { color: '#D97706', fontSize: 10, fontWeight: '700' },
-
-  // Info
-  infoCard: {
-    backgroundColor: '#EEF2FF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#C7D2FE',
-  },
-  infoTitle: { color: '#3730A3', fontSize: 14, fontWeight: '700', marginBottom: 6 },
-  infoBody: { color: '#6B7280', fontSize: 12, lineHeight: 19 },
 });

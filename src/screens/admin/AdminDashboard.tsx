@@ -1,36 +1,95 @@
-import React, { useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import React, { createContext, useContext, useEffect, useState, useMemo, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  RefreshControl,
+} from 'react-native';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import {
+  LayoutDashboard,
+  Users,
+  Receipt,
+  Landmark,
+  TrendingUp,
+  Briefcase,
+  RefreshCw,
+} from 'lucide-react-native';
 import { useAuth } from '../../context/AuthContext';
-import { useThemeColors, ThemeColors } from '../../context/ThemeContext';
+import { useThemeColors } from '../../context/ThemeContext';
 import { StatCard } from '../../components/StatCard';
+import { DailyBarChart } from '../../components/agent/DailyBarChart';
+import { StatusPill } from '../../components/ui/StatusPill';
+import { SectionHeader } from '../../components/ui/AppCard';
 import { CollectionRecord } from '../../types';
+import { RADIUS, TABULAR_NUMS } from '../../theme/tokens';
+import { triggerLightHaptic } from '../../utils/haptics';
 
 interface AdminDashboardProps {
   onSelectReceipt: (receipt: CollectionRecord) => void;
 }
 
-export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onSelectReceipt }) => {
+interface AdminSummaryData {
+  totalBalance: number;
+  todaysCollection: number;
+  todaysReceiptsCount: number;
+  activeAccountsCount: number;
+  activeAgentsCount: number;
+}
+
+interface AdminCtxValue {
+  refreshing: boolean;
+  loadSummary: () => Promise<void>;
+  summary: AdminSummaryData | null;
+  onSelectReceipt: (receipt: CollectionRecord) => void;
+}
+
+const AdminCtx = createContext<AdminCtxValue | undefined>(undefined);
+const useAdminCtx = () => {
+  const c = useContext(AdminCtx);
+  if (!c) throw new Error('useAdminCtx must be used inside AdminDashboard');
+  return c;
+};
+
+const Tab = createBottomTabNavigator();
+
+// Top-level stable tab components (prevent remounting on state updates)
+const AdminOverviewTab: React.FC = () => {
   const { accounts, collections, agents } = useAuth();
   const { colors } = useThemeColors();
-  const styles = useMemo(() => getStyles(colors), [colors]);
+  const { refreshing, loadSummary, summary, onSelectReceipt } = useAdminCtx();
 
-  const totalBalance = accounts.reduce((sum, acc) => sum + acc.currentBalance, 0);
-  const totalCollectedToday = collections
-    .filter((c) => c.timestamp.includes('2026-08-08') || c.timestamp.includes('AM') || c.timestamp.includes('PM'))
-    .reduce((sum, c) => sum + c.amount, 0);
-  const activeAccountsCount = accounts.filter((a) => a.status === 'ACTIVE').length;
+  const totalBalance = summary?.totalBalance ?? accounts.reduce((sum, acc) => sum + acc.currentBalance, 0);
+  const totalCollectedToday = summary?.todaysCollection ?? collections.reduce((sum, c) => sum + c.amount, 0);
+  const activeAccountsCount = summary?.activeAccountsCount ?? accounts.filter((a) => a.status === 'ACTIVE').length;
+  const activeAgentsCount = summary?.activeAgentsCount ?? agents.length;
+  const todaysReceiptsCount = summary?.todaysReceiptsCount ?? collections.length;
+
+  const agentChartData = agents.slice(0, 7).map((a) => ({
+    label: (a.name || 'Ag').split(' ')[0].slice(0, 6),
+    value: Number(a.todayCollectedAmount || 0),
+  }));
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.sectionHeader}>Admin Financial Control Center</Text>
-
-      {/* Action Buttons */}
-      <View style={styles.btnRow}>
+    <ScrollView
+      style={[styles.screen, { backgroundColor: colors.background }]}
+      contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadSummary} />}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.topActionRow}>
+        <Text style={[styles.heading, { color: colors.text }]}>Financial Control Center</Text>
         <TouchableOpacity
-          style={styles.primaryBtn}
-          onPress={() => Alert.alert('New Account', 'Create Customer Pigmi Account module ready.')}
+          style={[styles.refreshPill, { backgroundColor: colors.card, borderColor: colors.border }]}
+          onPress={() => {
+            triggerLightHaptic();
+            loadSummary();
+          }}
         >
-          <Text style={styles.primaryBtnText}>+ New Pigmi Account</Text>
+          <RefreshCw size={13} color={colors.primary} />
+          <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>Refresh</Text>
         </TouchableOpacity>
       </View>
 
@@ -38,256 +97,311 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onSelectReceipt 
         <StatCard
           title="Total Balance"
           value={`₹${totalBalance.toLocaleString('en-IN')}`}
-          subtitle="Accrued in system"
+          subtitle="Active Pigmy"
           accentColor="#10B981"
-          icon="🏛️"
+          iconElement={<Landmark size={18} color="#10B981" />}
         />
         <StatCard
           title="Today's Collection"
           value={`₹${totalCollectedToday.toLocaleString('en-IN')}`}
-          subtitle={`${collections.length} receipts`}
+          subtitle={`${todaysReceiptsCount} receipts`}
           accentColor={colors.primary}
-          icon="📈"
+          iconElement={<TrendingUp size={18} color={colors.primary} />}
         />
         <StatCard
           title="Active Accounts"
           value={`${activeAccountsCount}`}
-          subtitle="Verified customers"
+          subtitle="Verified members"
           accentColor="#F59E0B"
-          icon="👥"
+          iconElement={<Users size={18} color="#F59E0B" />}
         />
         <StatCard
           title="Field Agents"
-          value={`${agents.length}`}
+          value={`${activeAgentsCount}`}
           subtitle="Active on field"
-          accentColor="#EC4899"
-          icon="💼"
+          accentColor={colors.primaryMid}
+          iconElement={<Briefcase size={18} color={colors.primaryMid} />}
         />
       </View>
 
-      {/* Agent Monitor */}
-      <View style={styles.card}>
-        <View style={styles.cardTitleRow}>
-          <Text style={styles.cardTitle}>Agent Field Monitor</Text>
-          <View style={styles.liveDot}>
-            <View style={styles.liveDotInner} />
-            <Text style={styles.liveText}>LIVE</Text>
+      {agentChartData.length > 0 && (
+        <DailyBarChart
+          title="एजंटनुसार आजचे संकलन (Agent Collection)"
+          data={agentChartData}
+          accentColor={colors.primary}
+        />
+      )}
+
+      <SectionHeader title={`अलीकडील पावत्या (${collections.slice(0, 6).length})`} />
+      {collections.slice(0, 6).map((rec) => (
+        <TouchableOpacity
+          key={rec.id}
+          style={[styles.listCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+          onPress={() => onSelectReceipt(rec)}
+          activeOpacity={0.78}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.custName, { color: colors.text }]}>{rec.customerName}</Text>
+            <Text style={{ fontSize: 11.5, color: colors.textMuted, marginTop: 2 }}>
+              {rec.accountNumber} • {rec.agentName} • {rec.paymentMode}
+            </Text>
           </View>
-        </View>
-
-        {agents.map((agent) => {
-          const progress = Math.min(100, Math.round((agent.todayCollectedAmount / agent.todayTargetAmount) * 100));
-          return (
-            <View key={agent.id} style={styles.agentCard}>
-              <View style={styles.agentRow}>
-                <View style={styles.agentAvatar}>
-                  <Text style={styles.agentAvatarText}>{agent.name.charAt(0)}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.agentName}>{agent.name}</Text>
-                  <Text style={styles.agentSub}>{agent.assignedCustomersCount} Customers • {agent.phone}</Text>
-                </View>
-                <View style={styles.progressBadge}>
-                  <Text style={styles.progressBadgeText}>{progress}%</Text>
-                </View>
-              </View>
-
-              <View style={styles.progressTrack}>
-                <View style={[styles.progressFill, { width: `${progress}%` }]} />
-              </View>
-
-              <View style={styles.agentMetrics}>
-                <Text style={styles.metricLabel}>
-                  Collected: <Text style={styles.metricValue}>₹{agent.todayCollectedAmount.toLocaleString('en-IN')}</Text>
-                </Text>
-                <Text style={styles.metricLabel}>
-                  Target: <Text style={styles.metricMuted}>₹{agent.todayTargetAmount.toLocaleString('en-IN')}</Text>
-                </Text>
-              </View>
-            </View>
-          );
-        })}
-      </View>
-
-      {/* Recent Deposits */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Recent Pigmi Deposits</Text>
-        {collections.map((rec) => (
-          <TouchableOpacity
-            key={rec.id}
-            style={styles.listRow}
-            onPress={() => onSelectReceipt(rec)}
-            activeOpacity={0.6}
-          >
-            <View style={styles.listRowLeft}>
-              <View style={styles.receiptDot} />
-              <View>
-                <Text style={styles.custName}>{rec.customerName}</Text>
-                <Text style={styles.listSub}>{rec.accountNumber} • {rec.paymentMode}</Text>
-                <Text style={styles.listTime}>{rec.timestamp}</Text>
-              </View>
-            </View>
-            <View style={styles.listRowRight}>
-              <Text style={styles.amountText}>+₹{rec.amount}</Text>
-              <Text style={styles.receiptNo}>{rec.receiptNo}</Text>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={[TABULAR_NUMS, { fontSize: 14.5, fontWeight: '800', color: colors.successText }]}>
+              +₹{rec.amount.toLocaleString('en-IN')}
+            </Text>
+            <Text style={{ fontSize: 10.5, color: colors.textMuted }}>{rec.receiptNo}</Text>
+          </View>
+        </TouchableOpacity>
+      ))}
     </ScrollView>
   );
 };
 
-const getStyles = (colors: ThemeColors) => StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: 16, paddingBottom: 40 },
-  sectionHeader: {
-    color: colors.primaryDark,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.5,
+const AdminAgentsTab: React.FC = () => {
+  const { agents } = useAuth();
+  const { colors } = useThemeColors();
+  const { refreshing, loadSummary } = useAdminCtx();
+
+  return (
+    <ScrollView
+      style={[styles.screen, { backgroundColor: colors.background }]}
+      contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadSummary} />}
+      showsVerticalScrollIndicator={false}
+    >
+      <SectionHeader title={`Field Agents (${agents.length})`} />
+      {agents.map((agent) => {
+        const progress =
+          agent.todayTargetAmount > 0
+            ? Math.min(100, Math.round((agent.todayCollectedAmount / agent.todayTargetAmount) * 100))
+            : 0;
+        return (
+          <View
+            key={agent.id}
+            style={[styles.agentCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+          >
+            <View style={styles.agentHeader}>
+              <View style={[styles.avatarCircle, { backgroundColor: colors.infoBg }]}>
+                <Text style={{ fontWeight: '800', color: colors.primary }}>{agent.name.charAt(0)}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.custName, { color: colors.text }]}>{agent.name}</Text>
+                <Text style={{ fontSize: 11.5, color: colors.textMuted }}>
+                  {agent.assignedCustomersCount} Customers • {agent.phone}
+                </Text>
+              </View>
+              <StatusPill label={`${progress}%`} tone={progress >= 75 ? 'success' : 'primary'} />
+            </View>
+
+            <View style={[styles.track, { backgroundColor: colors.surfaceMuted }]}>
+              <View style={[styles.fill, { width: `${progress}%`, backgroundColor: colors.primary }]} />
+            </View>
+
+            <View style={styles.agentFooter}>
+              <Text style={{ fontSize: 12, color: colors.textSecondary }}>
+                Collected:{' '}
+                <Text style={[TABULAR_NUMS, { fontWeight: '800', color: colors.successText }]}>
+                  ₹{agent.todayCollectedAmount.toLocaleString('en-IN')}
+                </Text>
+              </Text>
+              <Text style={{ fontSize: 12, color: colors.textMuted }}>
+                Target: ₹{agent.todayTargetAmount.toLocaleString('en-IN')}
+              </Text>
+            </View>
+          </View>
+        );
+      })}
+    </ScrollView>
+  );
+};
+
+const AdminReceiptsTab: React.FC = () => {
+  const { collections } = useAuth();
+  const { colors } = useThemeColors();
+  const { refreshing, loadSummary, onSelectReceipt } = useAdminCtx();
+
+  return (
+    <ScrollView
+      style={[styles.screen, { backgroundColor: colors.background }]}
+      contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadSummary} />}
+      showsVerticalScrollIndicator={false}
+    >
+      <SectionHeader title={`All Recent Deposits (${collections.length})`} />
+      {collections.map((rec) => (
+        <TouchableOpacity
+          key={rec.id}
+          style={[styles.listCard, { backgroundColor: colors.card, borderColor: colors.border }]}
+          onPress={() => onSelectReceipt(rec)}
+          activeOpacity={0.78}
+        >
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.custName, { color: colors.text }]}>{rec.customerName}</Text>
+            <Text style={{ fontSize: 11.5, color: colors.textMuted, marginTop: 2 }}>
+              {rec.accountNumber} • {rec.paymentMode} • {rec.timestamp}
+            </Text>
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={[TABULAR_NUMS, { fontSize: 14.5, fontWeight: '800', color: colors.successText }]}>
+              +₹{rec.amount.toLocaleString('en-IN')}
+            </Text>
+            <Text style={{ fontSize: 10.5, color: colors.textMuted }}>{rec.receiptNo}</Text>
+          </View>
+        </TouchableOpacity>
+      ))}
+    </ScrollView>
+  );
+};
+
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onSelectReceipt }) => {
+  const { fetchAdminSummary } = useAuth();
+  const { colors } = useThemeColors();
+  const [refreshing, setRefreshing] = useState(false);
+  const [summary, setSummary] = useState<AdminSummaryData | null>(null);
+
+  const loadSummary = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const data = await fetchAdminSummary();
+      if (data) setSummary(data);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fetchAdminSummary]);
+
+  useEffect(() => {
+    loadSummary();
+  }, [loadSummary]);
+
+  const ctxValue = useMemo(
+    () => ({ refreshing, loadSummary, summary, onSelectReceipt }),
+    [refreshing, loadSummary, summary, onSelectReceipt]
+  );
+
+  return (
+    <AdminCtx.Provider value={ctxValue}>
+      <Tab.Navigator
+        screenOptions={{
+          headerShown: false,
+          tabBarHideOnKeyboard: true,
+          tabBarActiveTintColor: colors.primaryDark,
+          tabBarInactiveTintColor: colors.textMuted,
+          tabBarStyle: {
+            backgroundColor: colors.card,
+            borderTopColor: colors.border,
+            height: 62,
+            paddingBottom: 8,
+            paddingTop: 6,
+          },
+          tabBarLabelStyle: {
+            fontSize: 11,
+            fontWeight: '700',
+          },
+        }}
+      >
+        <Tab.Screen
+          name="AdminOverview"
+          component={AdminOverviewTab}
+          options={{
+            tabBarLabel: 'Overview',
+            tabBarIcon: ({ color, size }) => <LayoutDashboard size={size - 2} color={color} />,
+          }}
+        />
+        <Tab.Screen
+          name="AdminAgents"
+          component={AdminAgentsTab}
+          options={{
+            tabBarLabel: 'Agents',
+            tabBarIcon: ({ color, size }) => <Users size={size - 2} color={color} />,
+          }}
+        />
+        <Tab.Screen
+          name="AdminReceipts"
+          component={AdminReceiptsTab}
+          options={{
+            tabBarLabel: 'Receipts',
+            tabBarIcon: ({ color, size }) => <Receipt size={size - 2} color={color} />,
+          }}
+        />
+      </Tab.Navigator>
+    </AdminCtx.Provider>
+  );
+};
+
+const styles = StyleSheet.create({
+  screen: { flex: 1 },
+  content: { padding: 14, paddingBottom: 28 },
+  topActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 14,
+  },
+  heading: {
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  refreshPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
   },
   statsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
-    marginBottom: 14,
-  },
-
-  // Card
-  card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#EDE9FE',
-    shadowColor: colors.primaryDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  cardTitleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  cardTitle: {
-    color: '#1E1B4B',
-    fontSize: 16,
-    fontWeight: '700',
     marginBottom: 12,
   },
-  liveDot: {
+  listCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    justifyContent: 'space-between',
+    padding: 13,
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    marginBottom: 9,
+    gap: 10,
   },
-  liveDotInner: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#10B981',
-  },
-  liveText: {
-    color: '#10B981',
-    fontSize: 11,
+  custName: {
+    fontSize: 14,
     fontWeight: '700',
   },
-
-  // Agent card
   agentCard: {
-    backgroundColor: colors.background,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 10,
+    padding: 14,
+    borderRadius: RADIUS.lg,
     borderWidth: 1,
-    borderColor: '#EDE9FE',
+    marginBottom: 10,
   },
-  agentRow: {
+  agentHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginBottom: 10,
   },
-  agentAvatar: {
+  avatarCircle: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  agentAvatarText: {
-    color: '#FFFFFF',
-    fontWeight: '800',
-    fontSize: 16,
-  },
-  agentName: { color: '#1E1B4B', fontSize: 14, fontWeight: '700' },
-  agentSub: { color: '#9CA3AF', fontSize: 11, marginTop: 2 },
-  progressBadge: {
-    backgroundColor: '#EEF2FF',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  progressBadgeText: { color: colors.primary, fontSize: 12, fontWeight: '700' },
-  progressTrack: {
-    height: 6,
-    backgroundColor: colors.background,
-    borderRadius: 3,
+  track: {
+    height: 7,
+    borderRadius: 4,
     overflow: 'hidden',
+    marginTop: 12,
     marginBottom: 8,
   },
-  progressFill: {
+  fill: {
     height: '100%',
-    backgroundColor: colors.primary,
-    borderRadius: 3,
+    borderRadius: 4,
   },
-  agentMetrics: { flexDirection: 'row', justifyContent: 'space-between' },
-  metricLabel: { color: '#9CA3AF', fontSize: 12 },
-  metricValue: { color: colors.primary, fontWeight: '700' },
-  metricMuted: { color: '#6B7280' },
-
-  // List rows
-  listRow: {
+  agentFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.background,
   },
-  listRowLeft: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
-  receiptDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.primary,
-  },
-  custName: { color: '#1E1B4B', fontSize: 14, fontWeight: '600' },
-  listSub: { color: '#9CA3AF', fontSize: 11, marginTop: 2 },
-  listTime: { color: '#D1D5DB', fontSize: 10, marginTop: 1 },
-  listRowRight: { alignItems: 'flex-end' },
-  amountText: { color: '#10B981', fontSize: 15, fontWeight: '800' },
-  receiptNo: { color: '#D1D5DB', fontSize: 10, marginTop: 2 },
-
-  // Buttons
-  btnRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
-  primaryBtn: {
-    flex: 1,
-    backgroundColor: colors.primary,
-    paddingVertical: 14,
-    borderRadius: 14,
-    alignItems: 'center',
-    shadowColor: colors.primary,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 6,
-  },
-  primaryBtnText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
 });

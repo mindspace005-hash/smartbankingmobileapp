@@ -135,6 +135,7 @@ export interface CollectionRecord {
   productTitle?: string;
   paymentMode: 'CASH' | 'UPI' | 'BANK_TRANSFER';
   timestamp: string;
+  collectionTimestamp?: string; // Exact ISO timestamp captured at collection time for offline sync
   status: 'COLLECTED' | 'VERIFIED' | 'REJECTED';
   syncStatus: 'SYNC_PENDING' | 'SYNCED'; // For offline-first architecture
   notes?: string;
@@ -166,8 +167,12 @@ export interface DashboardSummary {
   date: string;
   openingBalance: number;
   todaysCollection: number;
+  todaysRemittance?: number;
   totalReceipts: number;
   closingBalance: number;
+  pendingCashInHand?: number;
+  lockStatus?: string;
+  isLocked?: boolean;
 }
 
 export interface PreviousDayCollection {

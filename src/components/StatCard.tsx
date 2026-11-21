@@ -1,14 +1,15 @@
 import React from 'react';
-import { useThemeColors, ThemeColors } from '../context/ThemeContext';
-// import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { IndianRupee } from 'lucide-react-native';
+import { useThemeColors } from '../context/ThemeContext';
+import { RADIUS, TABULAR_NUMS } from '../theme/tokens';
 
 interface StatCardProps {
   title: string;
   value: string;
   subtitle?: string;
   accentColor?: string;
-  icon?: string;
+  iconElement?: React.ReactNode;
 }
 
 export const StatCard: React.FC<StatCardProps> = ({
@@ -16,67 +17,86 @@ export const StatCard: React.FC<StatCardProps> = ({
   value,
   subtitle,
   accentColor: propAccentColor,
-  icon = '💰',
+  iconElement,
 }) => {
   const { colors } = useThemeColors();
-  const styles = React.useMemo(() => getStyles(colors), [colors]);
   const accentColor = propAccentColor || colors.primary;
+
   return (
-    <View style={[styles.card, { borderTopColor: accentColor }]}>
-      <View style={styles.headerRow}>
-        <View style={[styles.iconBg, { backgroundColor: accentColor + '18' }]}>
-          <Text style={styles.icon}>{icon}</Text>
+    <View
+      style={[
+        styles.card,
+        {
+          backgroundColor: colors.card,
+          borderColor: colors.border,
+          shadowColor: colors.primaryDark,
+        },
+      ]}
+    >
+      <View style={styles.topRow}>
+        <View style={[styles.iconBg, { backgroundColor: accentColor + '16' }]}>
+          {iconElement || <IndianRupee size={18} color={accentColor} strokeWidth={2.2} />}
         </View>
+        <View style={[styles.accentDot, { backgroundColor: accentColor }]} />
       </View>
-      <Text style={[styles.value, { color: accentColor }]}>{value}</Text>
-      <Text style={styles.title}>{title}</Text>
-      {subtitle && <Text style={styles.subtitle}>{subtitle}</Text>}
+
+      <Text style={[styles.value, TABULAR_NUMS, { color: colors.text }]} numberOfLines={1}>
+        {value}
+      </Text>
+      <Text style={[styles.title, { color: colors.textSecondary }]} numberOfLines={1}>
+        {title}
+      </Text>
+      {subtitle ? (
+        <Text style={[styles.subtitle, { color: colors.textMuted }]} numberOfLines={1}>
+          {subtitle}
+        </Text>
+      ) : null}
     </View>
   );
 };
 
-const getStyles = (colors: ThemeColors) => StyleSheet.create({
+const styles = StyleSheet.create({
   card: {
     flex: 1,
     minWidth: '47%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderTopWidth: 3,
+    borderRadius: RADIUS.lg,
+    padding: 15,
     borderWidth: 1,
-    borderColor: '#EDE9FE',
-    marginBottom: 12,
-    shadowColor: colors.primaryDark,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.07,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  headerRow: {
     marginBottom: 10,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  topRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
   },
   iconBg: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
+    width: 38,
+    height: 38,
+    borderRadius: 11,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  icon: { fontSize: 18 },
+  accentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    opacity: 0.7,
+  },
   value: {
-    fontSize: 22,
+    fontSize: 21,
     fontWeight: '800',
-    marginBottom: 2,
+    marginBottom: 3,
   },
   title: {
-    color: '#6B7280',
     fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
+    fontWeight: '700',
   },
   subtitle: {
-    color: '#9CA3AF',
     fontSize: 11,
     fontWeight: '500',
     marginTop: 2,

@@ -26,7 +26,24 @@ export const CURRENT_SANSTHA: keyof typeof SANSTHA_REGISTRY = 'TESTING';
 export const CONFIG = {
   SANSTHA_NAME: SANSTHA_REGISTRY[CURRENT_SANSTHA].name,
   API_BASE_URL: process.env.EXPO_PUBLIC_API_BASE_URL || SANSTHA_REGISTRY[CURRENT_SANSTHA].apiUrl,
-  // You can set EXPO_PUBLIC_API_BASE_URL in your .env or environment to override this.
+};
+
+// Keep JWT token strictly in memory (persisted encrypted via Keychain, never in plaintext AsyncStorage)
+let inMemoryAuthToken = '';
+let onUnauthorizedCallback: (() => void) | null = null;
+let isHandlingUnauthorized = false;
+
+export const setInMemoryAuthToken = (token: string) => {
+  inMemoryAuthToken = token || '';
+  if (token) {
+    isHandlingUnauthorized = false;
+  }
+};
+
+export const getInMemoryAuthToken = (): string => inMemoryAuthToken;
+
+export const registerUnauthorizedHandler = (handler: (() => void) | null) => {
+  onUnauthorizedCallback = handler;
 };
 
 export const apiClient = axios.create({
@@ -36,47 +53,46 @@ export const apiClient = axios.create({
   },
 });
 
-// Request Interceptor: Attach token if it exists
+// Request Interceptor: Attach in-memory JWT token and Agent ID if present
 apiClient.interceptors.request.use(
   async (config) => {
     try {
-      const token = await AsyncStorage.getItem('AUTH_TOKEN');
       const agentId = await AsyncStorage.getItem('AGENT_ID');
-      if (token && config.headers) {
-        config.headers.Authorization = `Bearer ${token}`;
+      if (inMemoryAuthToken && config.headers) {
+        config.headers.Authorization = `Bearer ${inMemoryAuthToken}`;
       }
       if (agentId && config.headers) {
         config.headers['X-Agent-Id'] = agentId;
       }
     } catch (error) {
-      console.error('Error reading token from AsyncStorage', error);
+      console.error('Error attaching auth headers', error);
     }
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Response Interceptor: Handle 401 Unauthorized globally
+// Response Interceptor: Handle 401 Unauthorized globally and trigger logout
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
-    if (error.response && error.response.status === 401) {
-      // Token is invalid or expired
-      console.warn('401 Unauthorized - clearing token and redirecting to login');
-      try {
-        await AsyncStorage.removeItem('AUTH_TOKEN');
-      } catch (e) {
-        console.error('Error removing token on 401', e);
+    const reqUrl: string = error?.config?.url || '';
+    const lowerUrl = reqUrl.toLowerCase();
+    const isLoginCall =
+      lowerUrl.includes('/api/auth/login') ||
+      lowerUrl.includes('/api/auth/customer/activate-temp-pin');
+    if (error.response && error.response.status === 401 && !isLoginCall && inMemoryAuthToken) {
+      console.warn('401 Unauthorized - clearing session and returning to login');
+      inMemoryAuthToken = '';
+      if (onUnauthorizedCallback && !isHandlingUnauthorized) {
+        isHandlingUnauthorized = true;
+        try {
+          onUnauthorizedCallback();
+        } catch (e) {
+          console.error('Error during unauthorized logout callback', e);
+        }
       }
-      
-      // Optionally trigger a global event here if needed, but context rehydration on token clear
-      // might need to be handled carefully. We'll rely on the app checking token state or
-      // returning the error to the caller who handles the logout.
-      // Alternatively, we could dispatch a custom event.
     }
     return Promise.reject(error);
   }
 );
-

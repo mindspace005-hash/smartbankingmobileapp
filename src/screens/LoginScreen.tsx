@@ -7,481 +7,578 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
-  Pressable,
-  Dimensions,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import {
+  Landmark,
+  User,
+  Lock,
+  Eye,
+  EyeOff,
+  AlertCircle,
+  ArrowRight,
+  Palette,
+  Globe,
+  ShieldCheck,
+  Smartphone,
+  KeyRound,
+} from 'lucide-react-native';
 import { UserRole } from '../types';
 import { useThemeColors } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
-import { NetworkIndicator } from '../components/NetworkIndicator';
 import { CONFIG } from '../config';
-
-const { height } = Dimensions.get('window');
-
-interface LoginCredential {
-  username: string;
-  password: string;
-  role: UserRole;
-  name: string;
-  icon: string;
-  roleLabel: string;
-  accentColor: string;
-  agentId?: string;
-  phone?: string;
-}
-
-const MOCK_CREDENTIALS: LoginCredential[] = [
-  {
-    username: 'admin',
-    password: 'admin123',
-    role: 'ADMIN',
-    name: 'Rajesh Kumar',
-    icon: '👑',
-    roleLabel: 'Administrator',
-    accentColor: '#F59E0B',
-  },
-  {
-    username: 'cust',
-    password: 'cust123',
-    role: 'CUSTOMER',
-    name: 'Aniket Sharma',
-    icon: '👤',
-    roleLabel: 'Customer',
-    accentColor: '#EC4899',
-  },
-];
+import { NetworkIndicator } from '../components/NetworkIndicator';
+import { RADIUS } from '../theme/tokens';
+import { triggerErrorHaptic, triggerLightHaptic } from '../utils/haptics';
 
 interface LoginScreenProps {
   onLogin: (username?: string, password?: string, role?: UserRole, credential?: any) => Promise<void>;
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
-  const { agents } = useAuth();
+  const { activateCustomerTempPin } = useAuth();
+  const [loginMode, setLoginMode] = useState<'STAFF_AGENT' | 'CUSTOMER'>('STAFF_AGENT');
+  const [customerSetupMode, setCustomerSetupMode] = useState(false);
+
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [cifNo, setCifNo] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [usernameFocused, setUsernameFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
   const [error, setError] = useState('');
-  
-  const { theme, colors, toggleTheme } = useThemeColors();
-  const isCream = theme === 'cream';
 
-  // Use only static mocks (Admin, Customer) for demo logins
-  const dynamicCredentials: LoginCredential[] = [
-    ...MOCK_CREDENTIALS
-  ];
+  const { colors, language, t, toggleTheme, toggleLanguage } = useThemeColors();
+
+  const extractApiError = (err: any) => {
+    const status = err?.response?.status;
+    const data = err?.response?.data;
+    if (typeof data === 'string' && data.trim().length > 0) {
+      return data.trim();
+    }
+    if (data && typeof data === 'object') {
+      if (typeof data.message === 'string' && data.message.trim().length > 0) {
+        return data.message.trim();
+      }
+      if (typeof data.title === 'string' && data.title.trim().length > 0 && status !== 401) {
+        return data.title.trim();
+      }
+    }
+    if (status === 401) {
+      return 'माहिती जुळली नाही किंवा सर्व्हरवर खातेदार सेवा अपडेट करणे बाकी आहे (401).';
+    }
+    return err?.message || 'लॉगिन अयशस्वी झाले. कृपया माहिती तपासा.';
+  };
 
   const handleLogin = async () => {
     setError('');
-    if (!username.trim() || !password.trim()) {
-      setError('Username and password are required.');
-      return;
-    }
-    setLoading(true);
-
-    // Check old method for Admin, Customer, and Demo Agents
-    const mockMatched = dynamicCredentials.find(
-      (c) =>
-        c.username.toLowerCase() === username.trim().toLowerCase() &&
-        c.password === password
-    );
-
-    if (mockMatched) {
+    if (loginMode === 'CUSTOMER' && customerSetupMode) {
+      if (!username.trim() || !cifNo.trim() || password.trim().length < 4) {
+        triggerErrorHaptic();
+        setError('मोबाईल क्र., CIF क्रमांक आणि किमान ४ अंकी नवीन mPIN आवश्यक आहे.');
+        return;
+      }
+      triggerLightHaptic();
+      setLoading(true);
       try {
-        await onLogin(undefined, undefined, mockMatched.role, mockMatched);
-      } catch (e: any) {
-        setError(e.message || 'Login failed');
+        await activateCustomerTempPin(username.trim(), cifNo.trim(), password.trim());
+      } catch (err: any) {
+        triggerErrorHaptic();
+        setError(extractApiError(err));
       } finally {
         setLoading(false);
       }
       return;
     }
 
-    // Dynamic Login via API
+    if (!username.trim() || !password.trim()) {
+      triggerErrorHaptic();
+      setError('युजरनेम / मोबाईल क्र. आणि पासवर्ड आवश्यक आहे.');
+      return;
+    }
+
+    triggerLightHaptic();
+    setLoading(true);
     try {
-      await onLogin(username.trim(), password, 'AGENT');
+      await onLogin(username.trim(), password, loginMode === 'CUSTOMER' ? 'CUSTOMER' : undefined);
     } catch (err: any) {
-      let errorMsg = 'Invalid username or password.';
-      if (err.response && err.response.data && err.response.data.message) {
-        errorMsg = err.response.data.message;
-      }
-      setError(errorMsg);
+      triggerErrorHaptic();
+      setError(extractApiError(err));
     } finally {
       setLoading(false);
     }
   };
 
-  const fillCredential = (cred: LoginCredential) => {
-    setUsername(cred.username);
-    setPassword(cred.password);
-    setError('');
-  };
-
   return (
-    <View style={[styles.root, { backgroundColor: colors.primaryDark }]}>
-      {/* ── Header Section ── */}
-      <View style={[styles.headerSection, { backgroundColor: colors.primaryDark }]}>
-        <NetworkIndicator style={{ position: 'absolute', top: 54, right: 70 }} />
-        {/* Theme Toggle Button */}
-        <TouchableOpacity
-          style={styles.themeToggleBtn}
-          onPress={toggleTheme}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.themeToggleText}>{isCream ? '🌙' : '☀️'}</Text>
-        </TouchableOpacity>
-
-        {/* Decorative circles */}
-        <View style={[styles.decCircle1, { backgroundColor: colors.primaryLight + '33' }]} />
-        <View style={[styles.decCircle2, { backgroundColor: colors.primaryLight + '20' }]} />
-
-        {/* Logo */}
-        <View style={styles.logoWrap}>
-          <View style={[styles.logoBox, { backgroundColor: colors.primary }]}>
-            <Text style={styles.logoEmoji}>🏦</Text>
-          </View>
-        </View>
-
-        <Text style={styles.welcomeTitle}>Mindspace</Text>
-        <Text style={[styles.welcomeSub, isCream && { color: '#FFEDD5' }]}>Sign in to continue</Text>
-      </View>
-
-      {/* ── White Card Section ── */}
+    <KeyboardAvoidingView
+      style={[styles.root, { backgroundColor: colors.background }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       <ScrollView
-        style={[styles.cardScroll, { backgroundColor: colors.background }]}
-        contentContainerStyle={styles.cardContent}
+        contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.card}>
-          <Text style={styles.signInTitle}>Sign In</Text>
-          <Text style={styles.signInSub}>Enter your credentials below</Text>
+        <LinearGradient
+          colors={colors.gradientColors}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.headerSection}
+        >
+          <View style={styles.decCircle1} />
+          <View style={styles.decCircle2} />
 
-          {/* Error */}
-          {error !== '' && (
-            <View style={styles.errorRow}>
-              <Text style={styles.errorText}>⚠ {error}</Text>
+          <View style={styles.topUtilityRow}>
+            <NetworkIndicator />
+            <View style={styles.utilityBtns}>
+              <TouchableOpacity
+                style={styles.utilityBtn}
+                onPress={() => {
+                  triggerLightHaptic();
+                  toggleLanguage();
+                }}
+                activeOpacity={0.75}
+              >
+                <Globe size={14} color="#FFFFFF" />
+                <Text style={styles.utilityBtnText}>{language === 'mr' ? 'MR' : 'EN'}</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.utilityBtn}
+                onPress={() => {
+                  triggerLightHaptic();
+                  toggleTheme();
+                }}
+                activeOpacity={0.75}
+              >
+                <Palette size={15} color="#FDE68A" />
+              </TouchableOpacity>
             </View>
-          )}
-
-          {/* Username */}
-          <View style={[
-            styles.inputField,
-            { backgroundColor: colors.background, borderColor: isCream ? '#FFEDD5' : '#EDE9FE' },
-            usernameFocused && [styles.inputFocused, { borderColor: colors.primary, shadowColor: colors.primary, backgroundColor: isCream ? '#FFF7ED' : '#EEF2FF' }],
-            error !== '' && !username && styles.inputError,
-          ]}>
-            <Text style={styles.fieldIcon}>👤</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="Username"
-              placeholderTextColor="#9CA3AF"
-              value={username}
-              onChangeText={(t) => { setUsername(t); setError(''); }}
-              autoCapitalize="none"
-              autoCorrect={false}
-              onFocus={() => setUsernameFocused(true)}
-              onBlur={() => setUsernameFocused(false)}
-            />
           </View>
 
-          {/* Password */}
-          <View style={[
-            styles.inputField,
-            { backgroundColor: colors.background, borderColor: isCream ? '#FFEDD5' : '#EDE9FE' },
-            passwordFocused && [styles.inputFocused, { borderColor: colors.primary, shadowColor: colors.primary, backgroundColor: isCream ? '#FFF7ED' : '#EEF2FF' }],
-          ]}>
-            <Text style={styles.fieldIcon}>🔒</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="Password"
-              placeholderTextColor="#9CA3AF"
-              value={password}
-              onChangeText={(t) => { setPassword(t); setError(''); }}
-              secureTextEntry={!showPassword}
-              onFocus={() => setPasswordFocused(true)}
-              onBlur={() => setPasswordFocused(false)}
-            />
-            <Pressable onPress={() => setShowPassword(!showPassword)}>
-              <Text style={styles.eyeIcon}>{showPassword ? '🙈' : '👁️'}</Text>
-            </Pressable>
+          <View style={styles.brandBlock}>
+            <View style={styles.emblemOuter}>
+              <Landmark size={34} color="#FFFFFF" strokeWidth={2} />
+            </View>
+            <Text style={styles.bankTitle}>{CONFIG.SANSTHA_NAME}</Text>
+            <Text style={[styles.bankSub, { color: colors.headerSubtext }]}>{t.appTagline}</Text>
           </View>
+        </LinearGradient>
 
-          {/* Sign In Button */}
-          <TouchableOpacity
-            style={[styles.signInBtn, { backgroundColor: colors.primary, shadowColor: colors.primary }, loading && { opacity: 0.75 }]}
-            onPress={handleLogin}
-            activeOpacity={0.85}
-            disabled={loading}
+        <View style={styles.cardWrap}>
+          <View
+            style={[
+              styles.card,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                shadowColor: colors.primaryDark,
+              },
+            ]}
           >
-            {loading ? (
-              <ActivityIndicator color="#fff" size="small" />
-            ) : (
-              <Text style={styles.signInBtnText}>Sign In  →</Text>
+            {/* Unified Role Switcher: Agent/Manager vs Khatedar */}
+            <View style={[styles.roleSwitch, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
+              <TouchableOpacity
+                style={[styles.roleTab, loginMode === 'STAFF_AGENT' && { backgroundColor: colors.primaryDark }]}
+                onPress={() => {
+                  triggerLightHaptic();
+                  setLoginMode('STAFF_AGENT');
+                  setCustomerSetupMode(false);
+                  setError('');
+                }}
+              >
+                <Text style={[styles.roleTabText, { color: loginMode === 'STAFF_AGENT' ? '#FFFFFF' : colors.textSecondary }]}>
+                  एजंट / मॅनेजर
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.roleTab, loginMode === 'CUSTOMER' && { backgroundColor: colors.primaryDark }]}
+                onPress={() => {
+                  triggerLightHaptic();
+                  setLoginMode('CUSTOMER');
+                  setError('');
+                }}
+              >
+                <Text style={[styles.roleTabText, { color: loginMode === 'CUSTOMER' ? '#FFFFFF' : colors.textSecondary }]}>
+                  खातेदार (Customer)
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.signInTitle, { color: colors.text }]}>
+              {loginMode === 'CUSTOMER'
+                ? customerSetupMode
+                  ? 'खातेदार तात्पुरता mPIN सेट करा'
+                  : 'खातेदार लॉगिन (Test Portal)'
+                : t.signInTitle}
+            </Text>
+            <Text style={[styles.signInSub, { color: colors.textMuted }]}>
+              {loginMode === 'CUSTOMER'
+                ? customerSetupMode
+                  ? 'नोंदणीकृत मोबाईल व CIF क्र. ने नवीन mPIN सेट करा'
+                  : 'मोबाईल क्र. / CIF आणि तुमचा mPIN प्रविष्ट करा'
+                : t.signInSub}
+            </Text>
+
+            {error !== '' && (
+              <View style={[styles.errorBox, { backgroundColor: colors.dangerBg, borderColor: '#FCA5A5' }]}>
+                <AlertCircle size={16} color={colors.dangerText} />
+                <Text style={[styles.errorText, { color: colors.dangerText }]}>{error}</Text>
+              </View>
             )}
-          </TouchableOpacity>
 
+            {/* Username / Mobile Input */}
+            <View
+              style={[
+                styles.inputField,
+                { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
+                usernameFocused && { borderColor: colors.primary, backgroundColor: '#FFFFFF' },
+              ]}
+            >
+              {loginMode === 'CUSTOMER' ? (
+                <Smartphone size={18} color={usernameFocused ? colors.primary : colors.textMuted} />
+              ) : (
+                <User size={18} color={usernameFocused ? colors.primary : colors.textMuted} />
+              )}
+              <TextInput
+                style={[styles.textInput, { color: colors.text }]}
+                placeholder={loginMode === 'CUSTOMER' ? 'नोंदणीकृत मोबाईल क्र. किंवा CIF' : t.usernamePlaceholder}
+                placeholderTextColor={colors.textMuted}
+                value={username}
+                onChangeText={(txt) => {
+                  setUsername(txt);
+                  if (error) setError('');
+                }}
+                onFocus={() => setUsernameFocused(true)}
+                onBlur={() => setUsernameFocused(false)}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType={loginMode === 'CUSTOMER' && customerSetupMode ? 'phone-pad' : 'default'}
+                returnKeyType="next"
+              />
+            </View>
 
+            {/* CIF Input (only during First-Time Temp PIN Activation) */}
+            {loginMode === 'CUSTOMER' && customerSetupMode && (
+              <View style={[styles.inputField, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
+                <KeyRound size={18} color={colors.textMuted} />
+                <TextInput
+                  style={[styles.textInput, { color: colors.text }]}
+                  placeholder="ग्राहक CIF क्रमांक (उदा. CIF0001)"
+                  placeholderTextColor={colors.textMuted}
+                  value={cifNo}
+                  onChangeText={(txt) => {
+                    setCifNo(txt);
+                    if (error) setError('');
+                  }}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                />
+              </View>
+            )}
 
-          <Text style={styles.footer}>PAT Financial Pigmi System v1.0</Text>
+            {/* Password / mPIN Input */}
+            <View
+              style={[
+                styles.inputField,
+                { backgroundColor: colors.surfaceMuted, borderColor: colors.border },
+                passwordFocused && { borderColor: colors.primary, backgroundColor: '#FFFFFF' },
+              ]}
+            >
+              <Lock size={18} color={passwordFocused ? colors.primary : colors.textMuted} />
+              <TextInput
+                style={[styles.textInput, { color: colors.text }]}
+                placeholder={
+                  loginMode === 'CUSTOMER'
+                    ? customerSetupMode
+                      ? 'नवीन ४–६ अंकी mPIN सेट करा'
+                      : 'mPIN (किंवा पहिली वेळ असल्यास CIF क्र.)'
+                    : t.passwordPlaceholder
+                }
+                placeholderTextColor={colors.textMuted}
+                value={password}
+                onChangeText={(txt) => {
+                  setPassword(txt);
+                  if (error) setError('');
+                }}
+                onFocus={() => setPasswordFocused(true)}
+                onBlur={() => setPasswordFocused(false)}
+                secureTextEntry={!showPassword}
+                keyboardType={loginMode === 'CUSTOMER' && customerSetupMode ? 'numeric' : 'default'}
+                returnKeyType="done"
+                onSubmitEditing={handleLogin}
+              />
+              <TouchableOpacity
+                onPress={() => setShowPassword((prev) => !prev)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                {showPassword ? (
+                  <EyeOff size={18} color={colors.textMuted} />
+                ) : (
+                  <Eye size={18} color={colors.textMuted} />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              onPress={handleLogin}
+              disabled={loading}
+              activeOpacity={0.85}
+              style={styles.submitShadow}
+            >
+              <LinearGradient
+                colors={[colors.primary, colors.primaryMid]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.submitBtn}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Text style={styles.submitText}>
+                      {loginMode === 'CUSTOMER' && customerSetupMode ? 'mPIN सेट करा आणि प्रवेश घ्या' : t.signInBtn}
+                    </Text>
+                    <ArrowRight size={18} color="#FFFFFF" strokeWidth={2.4} />
+                  </>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+
+            {loginMode === 'CUSTOMER' && (
+              <TouchableOpacity
+                style={styles.toggleSetupBtn}
+                onPress={() => {
+                  triggerLightHaptic();
+                  setCustomerSetupMode((p) => !p);
+                  setError('');
+                }}
+              >
+                <Text style={[styles.toggleSetupText, { color: colors.primary }]}>
+                  {customerSetupMode
+                    ? 'आधीच mPIN सेट आहे? परत लॉगिनवर जा'
+                    : 'प्रथमच टेस्टिंग? मोबाईल + CIF ने तात्पुरता mPIN सेट करा'}
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            <View style={styles.securityNoteRow}>
+              <ShieldCheck size={14} color={colors.success} />
+              <Text style={[styles.securityNoteText, { color: colors.textMuted }]}>
+                256-bit Encrypted CBS Session • Device Protected
+              </Text>
+            </View>
+          </View>
+
+          <Text style={[styles.footerText, { color: colors.textMuted }]}>
+            PAT Financial Core Banking System • v1.0
+          </Text>
         </View>
       </ScrollView>
-    </View>
+    </KeyboardAvoidingView>
   );
 };
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: '#4338CA',
-  },
-
-  // ── Header ──
-  themeToggleBtn: {
-    position: 'absolute',
-    top: 40,
-    right: 20,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 10,
-  },
-  themeToggleText: {
-    fontSize: 20,
-  },
+  root: { flex: 1 },
+  scrollContent: { flexGrow: 1 },
   headerSection: {
-    backgroundColor: '#4338CA',
-    alignItems: 'center',
-    paddingTop: 36,
-    paddingBottom: 40,
+    paddingTop: 18,
+    paddingBottom: 68,
+    paddingHorizontal: 20,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
     overflow: 'hidden',
-    position: 'relative',
   },
   decCircle1: {
     position: 'absolute',
     width: 220,
     height: 220,
     borderRadius: 110,
-    backgroundColor: '#6366F133',
+    backgroundColor: 'rgba(255,255,255,0.06)',
     top: -60,
-    right: -60,
+    right: -40,
   },
   decCircle2: {
     position: 'absolute',
-    width: 160,
-    height: 160,
-    borderRadius: 80,
-    backgroundColor: '#818CF820',
-    bottom: -40,
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    bottom: -20,
     left: -30,
   },
-  logoWrap: {
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 8,
+  topUtilityRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 22,
   },
-  logoBox: {
-    width: 72,
-    height: 72,
-    borderRadius: 20,
-    backgroundColor: '#6366F1',
+  utilityBtns: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  utilityBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: RADIUS.pill,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  utilityBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  brandBlock: {
+    alignItems: 'center',
+  },
+  emblemOuter: {
+    width: 70,
+    height: 70,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255,255,255,0.32)',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 3,
-    borderColor: 'rgba(255,255,255,0.3)',
+    marginBottom: 12,
   },
-  logoEmoji: { fontSize: 32 },
-  welcomeTitle: {
+  bankTitle: {
     color: '#FFFFFF',
-    fontSize: 28,
+    fontSize: 20,
     fontWeight: '800',
-    letterSpacing: 0.3,
+    textAlign: 'center',
   },
-  welcomeSub: {
-    color: '#C7D2FE',
-    fontSize: 14,
-    marginTop: 6,
+  bankSub: {
+    fontSize: 12.5,
+    fontWeight: '500',
+    marginTop: 4,
+    textAlign: 'center',
   },
-
-  // ── White Card ──
-  cardScroll: {
-    flex: 1,
-    backgroundColor: '#F5F3FF',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-  },
-  cardContent: {
-    paddingBottom: 40,
+  cardWrap: {
+    paddingHorizontal: 18,
+    marginTop: -40,
+    paddingBottom: 28,
   },
   card: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    padding: 28,
-    paddingTop: 32,
-    shadowColor: '#4338CA',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
+    borderRadius: 24,
+    padding: 20,
+    borderWidth: 1,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 18,
     elevation: 6,
   },
-  signInTitle: {
-    color: '#1E1B4B',
-    fontSize: 26,
+  roleSwitch: {
+    flexDirection: 'row',
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    padding: 4,
+    gap: 4,
+    marginBottom: 16,
+  },
+  roleTab: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: RADIUS.sm,
+    alignItems: 'center',
+  },
+  roleTabText: {
+    fontSize: 12.5,
     fontWeight: '800',
-    marginBottom: 4,
+  },
+  signInTitle: {
+    fontSize: 19,
+    fontWeight: '800',
   },
   signInSub: {
-    color: '#9CA3AF',
-    fontSize: 14,
-    marginBottom: 24,
+    fontSize: 12.5,
+    marginTop: 3,
+    marginBottom: 16,
   },
-
-  // ── Error ──
-  errorRow: {
-    backgroundColor: '#FEF2F2',
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 10,
-    paddingHorizontal: 14,
+    borderRadius: RADIUS.md,
+    paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 14,
   },
   errorText: {
-    color: '#EF4444',
-    fontSize: 13,
-    fontWeight: '500',
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '600',
   },
-
-  // ── Inputs ──
   inputField: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F5F3FF',
-    borderRadius: 14,
+    gap: 10,
     borderWidth: 1.5,
-    borderColor: '#EDE9FE',
-    paddingHorizontal: 16,
-    height: 54,
-    marginBottom: 14,
+    borderRadius: RADIUS.md,
+    paddingHorizontal: 14,
+    height: 50,
+    marginBottom: 12,
   },
-  inputFocused: {
-    borderColor: '#6366F1',
-    backgroundColor: '#EEF2FF',
-    shadowColor: '#6366F1',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  inputError: {
-    borderColor: '#EF4444',
-    backgroundColor: '#FEF2F2',
-  },
-  fieldIcon: { fontSize: 16, marginRight: 10 },
   textInput: {
     flex: 1,
-    color: '#1E1B4B',
-    fontSize: 15,
-    fontWeight: '500',
-  },
-  eyeIcon: { fontSize: 16, paddingLeft: 8 },
-
-  // ── Button ──
-  signInBtn: {
-    backgroundColor: '#4F46E5',
-    borderRadius: 14,
-    height: 54,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 4,
-    marginBottom: 24,
-    shadowColor: '#4F46E5',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.45,
-    shadowRadius: 14,
-    elevation: 8,
-  },
-  signInBtnText: {
-    color: '#FFFFFF',
-    fontSize: 17,
-    fontWeight: '800',
-    letterSpacing: 0.4,
-  },
-
-  // ── Divider ──
-  dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-    gap: 10,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#E5E7EB',
-  },
-  dividerText: {
-    color: '#9CA3AF',
-    fontSize: 12,
+    fontSize: 14.5,
     fontWeight: '600',
-    letterSpacing: 0.5,
   },
-
-  // ── Demo Cards ──
-  demoCard: {
+  submitShadow: {
+    marginTop: 4,
+    borderRadius: RADIUS.md,
+    overflow: 'hidden',
+    elevation: 4,
+  },
+  submitBtn: {
+    height: 50,
+    borderRadius: RADIUS.md,
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FAFAFA',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: '#F3F4F6',
-    gap: 12,
-  },
-  demoIconBg: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
+    gap: 8,
   },
-  demoIconText: { fontSize: 20 },
-  demoInfo: { flex: 1 },
-  demoName: {
-    color: '#1E1B4B',
-    fontSize: 14,
+  submitText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  toggleSetupBtn: {
+    marginTop: 14,
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  toggleSetupText: {
+    fontSize: 12.5,
     fontWeight: '700',
-  },
-  demoRole: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginTop: 2,
-  },
-  tapChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 20,
-  },
-  tapChipText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-
-  footer: {
-    color: '#D1D5DB',
-    fontSize: 11,
+    textDecorationLine: 'underline',
     textAlign: 'center',
-    marginTop: 16,
-    letterSpacing: 0.4,
+  },
+  securityNoteRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 14,
+  },
+  securityNoteText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  footerText: {
+    textAlign: 'center',
+    fontSize: 11.5,
+    fontWeight: '600',
+    marginTop: 20,
   },
 });

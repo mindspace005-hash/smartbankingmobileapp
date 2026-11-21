@@ -1,4 +1,4 @@
-﻿import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import { AppState, AppStateStatus, Alert } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -9,8 +9,15 @@ import {
   PassbookTransaction, CollectionReportItem, PigmyScheme, DropdownOptions, AgentCustomerRequest,
   AgentCustomer, ProductType, CustomerDoorstepProfile
 } from '../types';
-import { MOCK_USERS, MOCK_PIGMI_ACCOUNTS, INITIAL_COLLECTIONS, MOCK_AGENTS } from '../data/mockData';
-import { apiClient } from '../config';
+import { apiClient, setInMemoryAuthToken, registerUnauthorizedHandler } from '../config';
+
+const EMPTY_USER: User = {
+  id: '',
+  name: '',
+  email: '',
+  phone: '',
+  role: 'AGENT',
+};
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -34,16 +41,66 @@ interface AuthContextType {
   lastCreatedReceipt: CollectionRecord | null;
   clearLastReceipt: () => void;
 
-  // New Agent Endpoints
+  // Agent & Report Endpoints
   getDashboardSummary: () => DashboardSummary;
+  fetchDashboardSummary: (agentIdInput?: string | number) => Promise<DashboardSummary>;
   checkLockStatus: () => RemittanceStatus;
   createCustomer: (data: Partial<AgentCustomerRequest>) => Promise<any>;
   fetchPigmySchemes: () => Promise<PigmyScheme[]>;
   fetchDropdowns: () => Promise<DropdownOptions>;
-  bulkSyncCollections: (items: any[]) => Promise<any>;
+  bulkSyncCollections: (items?: any[]) => Promise<any>;
   getPassbookStatement: (accountId: string, fromDate?: string, toDate?: string) => PassbookStatement;
+  fetchPassbookStatement: (accountId: string, fromDate?: string, toDate?: string) => Promise<PassbookStatement>;
   getCollectionReport: (fromDate: string, toDate: string) => CollectionReport;
+  fetchCollectionReport: (fromDate?: string, toDate?: string) => Promise<CollectionReport>;
   getCommissionReport: (fromDate: string, toDate: string) => CommissionReport;
+  fetchCommissionReport: (fromDate?: string, toDate?: string) => Promise<CommissionReport>;
+  fetchPigmyBookReport: (filter: 'TODAY' | 'LAST_7_DAYS' | 'THIS_MONTH' | 'LAST_MONTH') => Promise<{
+    totalCollection: number;
+    dailyRecords: { date: string; customers: number; amount: number }[];
+  }>;
+  fetchAdminSummary: () => Promise<{
+    totalBalance: number;
+    todaysCollection: number;
+    todaysReceiptsCount: number;
+    activeAccountsCount: number;
+    activeAgentsCount: number;
+  } | null>;
+  activateCustomerTempPin: (mobileNo: string, cifNo: string, newPin: string) => Promise<void>;
+  fetchCustomerPortalOverview: () => Promise<{
+    summary: {
+      customerId: number;
+      cifNo: string;
+      customerName: string;
+      mobileNo: string;
+      branchName: string;
+      totalSavingsAndDeposits: number;
+      totalLoanOutstanding: number;
+      counts: { pigmy: number; saving: number; rd: number; fd: number; loan: number };
+    };
+    accounts: {
+      pigmyAccounts: any[];
+      savingAccounts: any[];
+      rdAccounts: any[];
+      fdAccounts: any[];
+      loanAccounts: any[];
+    };
+  }>;
+  fetchCustomerAccountPassbook: (productType: string, accountId: number) => Promise<{
+    productType: string;
+    accountNo: string;
+    currentBalance: number;
+    transactions: {
+      id: number;
+      date: string;
+      type: string;
+      crAmount: number;
+      drAmount: number;
+      balance: number;
+      narration: string;
+      reference: string;
+    }[];
+  }>;
   authToken: string;
   isLoadingAccounts: boolean;
   refreshAgentData: () => Promise<void>;
@@ -66,16 +123,17 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [currentRole, setCurrentRole] = useState<UserRole>('ADMIN');
-  const [currentUser, setCurrentUser] = useState<User>(MOCK_USERS.admin);
-  const [accounts, setAccounts] = useState<PigmiAccount[]>(MOCK_PIGMI_ACCOUNTS);
-  const [collections, setCollections] = useState<CollectionRecord[]>(INITIAL_COLLECTIONS);
+  const [currentRole, setCurrentRole] = useState<UserRole>('AGENT');
+  const [currentUser, setCurrentUser] = useState<User>(EMPTY_USER);
+  const [accounts, setAccounts] = useState<PigmiAccount[]>([]);
+  const [collections, setCollections] = useState<CollectionRecord[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentCustomers, setAgentCustomers] = useState<AgentCustomer[]>([]);
   const [lastCreatedReceipt, setLastCreatedReceipt] = useState<CollectionRecord | null>(null);
   const [authToken, setAuthToken] = useState<string>('');
   const [isLoadingAccounts, setIsLoadingAccounts] = useState<boolean>(false);
   const [serverLockStatus, setServerLockStatus] = useState<RemittanceStatus | null>(null);
+  const [serverDashboardSummary, setServerDashboardSummary] = useState<DashboardSummary | null>(null);
 
   const fetchLockStatus = async (agentIdInput?: string | number): Promise<RemittanceStatus | null> => {
     const rawId = (agentIdInput || currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')) || '1').toString().replace('agt_', '');
@@ -87,7 +145,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           collect_Pigmi: res.data.collect_Pigmi ?? (res.data.status === 'LOCKED' ? 0 : 1),
           is_pending: res.data.is_pending ?? (res.data.status === 'LOCKED' ? 1 : 0),
           status: res.data.status === 'LOCKED' ? 'LOCKED' : 'ALLOWED',
-          message: res.data.message || (res.data.status === 'LOCKED' ? 'à¤à¤œà¤‚à¤Ÿ à¤²à¥‰à¤• à¤†à¤¹à¥‡. à¤•à¥ƒà¤ªà¤¯à¤¾ à¤¬à¤à¤•à¥‡à¤¤ à¤°à¤•à¥à¤•à¤® à¤­à¤°à¤¾.' : 'à¤•à¤®à¤¿à¤¶à¤¨ à¤µ à¤ªà¤¿à¤—à¥à¤®à¥€ à¤•à¤²à¥‡à¤•à¥à¤¶à¤¨à¤¸à¤¾à¤ à¥€ à¤à¤œà¤‚à¤Ÿ à¤…à¤§à¤¿à¤•à¥ƒà¤¤ à¤†à¤¹à¥‡.'),
+          message: res.data.message || (res.data.status === 'LOCKED' ? 'एजंट लॉक आहे. कृपया बँकेत रक्कम भरा.' : 'कमिशन व पिग्मी कलेक्शनसाठी एजंट अधिकृत आहे.'),
           previousDaysCollectionDetails: res.data.previousDaysCollectionDetails || []
         };
         setServerLockStatus(data);
@@ -149,12 +207,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             agentName: currentUser.name || 'Agent',
             amount: Number(c.amount || c.CollectionAmount || 0),
             productType: 'PIGMY' as ProductType,
-            productTitle: 'à¤ªà¤¿à¤—à¥à¤®à¥€ à¤ à¥‡à¤µ',
+            productTitle: 'पिग्मी ठेव',
             paymentMode: 'CASH' as const,
             timestamp: dateStr,
             status: 'VERIFIED' as const,
             syncStatus: 'SYNCED' as const,
-            notes: 'à¤¸à¤°à¥à¤µà¥à¤¹à¤°à¤µà¤°à¥€à¤² à¤…à¤§à¤¿à¤•à¥ƒà¤¤ à¤¸à¤‚à¤•à¤²à¤¨'
+            notes: 'सर्व्हरवरील अधिकृत संकलन'
           };
         });
       }
@@ -221,6 +279,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         fetchAgentAccounts(rawAgentId),
         fetchAgentCustomers(rawAgentId),
         fetchLockStatus(rawAgentId),
+        fetchDashboardSummary(rawAgentId),
         fetchAndReconcileTodaysCollections(rawAgentId)
       ]);
     } catch (e) {
@@ -370,39 +429,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const bootstrapAsync = async () => {
       try {
-        const credentials = await Keychain.getGenericPassword({
-          authenticationPrompt: {
-            title: 'Authentication Required',
-            subtitle: 'Please verify to unlock your session'
-          }
-        });
+        await AsyncStorage.removeItem('AUTH_TOKEN');
+        let credentials: any = false;
+        try {
+          credentials = await Keychain.getGenericPassword({
+            authenticationPrompt: {
+              title: 'Authentication Required',
+              subtitle: 'Please verify to unlock your session'
+            }
+          });
+        } catch {
+          credentials = await Keychain.getGenericPassword();
+        }
+        const savedRole = (await AsyncStorage.getItem('CURRENT_ROLE')) as UserRole | null;
         const savedAgentId = await AsyncStorage.getItem('AGENT_ID');
         if (credentials && credentials.password) {
           const token = credentials.password;
-          await AsyncStorage.setItem('AUTH_TOKEN', token);
+          setInMemoryAuthToken(token);
           setAuthToken('Bearer ' + token);
-          setIsAuthenticated(true);
-          setCurrentRole('AGENT');
-          if (savedAgentId) {
-            const cachedUserStr = await AsyncStorage.getItem('CURRENT_USER');
-            if (cachedUserStr) {
-              setCurrentUser(JSON.parse(cachedUserStr));
+
+          const cachedUserStr = await AsyncStorage.getItem('CURRENT_USER');
+          if (cachedUserStr) {
+            setCurrentUser(JSON.parse(cachedUserStr));
+          }
+
+          if (savedRole === 'ADMIN') {
+            setCurrentRole('ADMIN');
+            setIsAuthenticated(true);
+            fetchAdminSummary().catch(() => {});
+          } else if (savedRole === 'CUSTOMER') {
+            setCurrentRole('CUSTOMER');
+            setIsAuthenticated(true);
+          } else {
+            setCurrentRole('AGENT');
+            setIsAuthenticated(true);
+            if (savedAgentId) {
+              await Promise.allSettled([
+                fetchAgentAccounts(savedAgentId),
+                fetchAgentCustomers(savedAgentId),
+                fetchLockStatus(savedAgentId),
+                fetchDashboardSummary(savedAgentId),
+                fetchAndReconcileTodaysCollections(savedAgentId),
+              ]);
+              fetchAgentProfile(savedAgentId).then(profile => {
+                if (profile) {
+                  setCurrentUser(prev => ({
+                    ...prev,
+                    name: profile.agentName || prev.name,
+                    phone: profile.mobileNo || profile.phone || prev.phone,
+                    limit: profile.limit || profile.dailyLimit,
+                    username: profile.userName || prev.username,
+                    agentId: `agt_${savedAgentId}`,
+                  }));
+                }
+              }).catch(() => {});
             }
-            await fetchAgentAccounts(savedAgentId);
-            await fetchAgentCustomers(savedAgentId);
-            await fetchAndReconcileTodaysCollections(savedAgentId);
-            fetchAgentProfile(savedAgentId).then(profile => {
-              if (profile) {
-                setCurrentUser(prev => ({
-                  ...prev,
-                  name: profile.agentName || prev.name,
-                  phone: profile.mobileNo || profile.phone || prev.phone,
-                  limit: profile.limit || profile.dailyLimit,
-                  username: profile.userName || prev.username,
-                  agentId: `agt_${savedAgentId}`,
-                }));
-              }
-            }).catch(() => {});
           }
         }
       } catch (e) {
@@ -446,152 +527,199 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     loadPendingCollections();
   }, []);
 
-  useEffect(() => {
-    const fetchAgents = async () => {
-      try {
-        const response = await apiClient.get('/api/PigmyAgents');
-        const data = response.data;
-        const agentList = Array.isArray(data) ? data : (data.value || []);
-        const mappedAgents: AgentSummary[] = agentList.map((agent: any) => ({
-          id: `agt_${agent.pigmyAgentID}`,
-          name: agent.agentName || 'Unknown Agent',
-          phone: agent.mobileNo || '',
-          assignedCustomersCount: 0,
-          todayTargetAmount: 0,
-          todayCollectedAmount: 0,
-          pendingCustomersCount: 0,
-          status: agent.status === 'Active' ? 'ACTIVE' : 'INACTIVE',
-        }));
-        if (mappedAgents.length > 0) {
-          setAgents(mappedAgents);
-        }
-      } catch (error) {
-        console.error('Error fetching pigmy agents:', error);
-      }
-    };
-    fetchAgents();
-  }, []);
+  const agentId = currentUser.agentId || '';
 
-  const agentId = currentUser.agentId || 'agt_101';
-
-  const login = async (username?: string, password?: string, role?: UserRole, credential?: any) => {
-    let targetRole = role || 'AGENT';
-    let loggedInUser = MOCK_USERS.admin;
-
-    if (targetRole === 'ADMIN') {
-      loggedInUser = MOCK_USERS.admin;
-    } else if (targetRole === 'CUSTOMER') {
-      loggedInUser = MOCK_USERS.customer;
-    } else if (targetRole === 'AGENT') {
-      let rawAgentId = '1';
-      if (username && password) {
-        // Dynamic login via Axios
-        try {
-          const response = await apiClient.post('/api/auth/login', { username, password });
-          const token = response.data.token || response.data.access_token;
-          if (token) {
-            await Keychain.setGenericPassword(username, token, {
-              accessControl: Keychain.ACCESS_CONTROL.BIOMETRY_ANY_OR_DEVICE_PASSCODE
-            });
-            await AsyncStorage.setItem('AUTH_TOKEN', token);
-
-            // Self-verification: verify secret is persisted successfully
-            const verifiedToken = await AsyncStorage.getItem('AUTH_TOKEN');
-            const verifiedKeychain = await Keychain.getGenericPassword();
-            if (!verifiedToken || !verifiedKeychain) {
-              console.warn('Secret verification check: re-persisting auth token');
-              await AsyncStorage.setItem('AUTH_TOKEN', token);
-            }
-
-            setAuthToken('Bearer ' + token);
-          }
-          
-          const extractedAgentId = (
-            response.data.agentId || 
-            response.data.pigmyAgentID || 
-            response.data.id || 
-            response.data.userId || 
-            response.data.user?.id || 
-            response.data.agent?.agentId || 
-            '1'
-          );
-          rawAgentId = extractedAgentId.toString().replace('agt_', '');
-          await AsyncStorage.setItem('AGENT_ID', rawAgentId);
-
-          // GET /api/PigmyAgents/{agentId}: Agent's personal info
-          let agentDetails: any = null;
-          try {
-            agentDetails = await fetchAgentProfile(rawAgentId);
-          } catch (e) {
-            console.log('Error fetching agent details:', e);
-          }
-
-          loggedInUser = {
-            id: `usr_${rawAgentId}`,
-            name: agentDetails?.agentName || response.data.name || response.data.agentName || username,
-            email: '',
-            phone: agentDetails?.mobileNo || agentDetails?.phone || response.data.phone || '+91 00000 00000',
-            role: 'AGENT',
-            agentId: `agt_${rawAgentId}`,
-            limit: agentDetails?.limit || agentDetails?.dailyLimit || response.data.limit,
-            username: agentDetails?.userName || username,
-          };
-        } catch (error) {
-          console.error('Login failed', error);
-          throw error;
-        }
-      } else {
-        // Fallback for mock roles if used
-        rawAgentId = (credential?.agentId || '1').toString().replace('agt_', '');
-        await AsyncStorage.setItem('AGENT_ID', rawAgentId);
-
-        let agentDetails: any = null;
-        try {
-          agentDetails = await fetchAgentProfile(rawAgentId);
-        } catch (e) {
-          console.log('Error fetching agent details:', e);
-        }
-
-        loggedInUser = {
-          id: `usr_${rawAgentId}`,
-          name: agentDetails?.agentName || credential?.name || 'Suresh Patil',
-          email: '',
-          phone: agentDetails?.mobileNo || agentDetails?.phone || credential?.phone || '+91 00000 00000',
-          role: 'AGENT',
-          agentId: `agt_${rawAgentId}`,
-          limit: agentDetails?.limit || agentDetails?.dailyLimit,
-          username: agentDetails?.userName || credential?.username,
-        };
-      }
-      
-      // 1. GET /api/PigmyAccounts/Agent/{agentId}: Agent's pigmy accounts
-      await fetchAgentAccounts(rawAgentId);
-
-      // 2. GET /api/PigmyApp/customers?agentId={agentId} or /api/PigmyAgents/{agentId}/customers: Distinct Customers
-      await fetchAgentCustomers(rawAgentId);
-      await fetchLockStatus(rawAgentId);
-      // 3. Compare and reconcile server collections with phone memory on login
-      try {
-        await fetchAndReconcileTodaysCollections(rawAgentId);
-      } catch (e) {
-        console.warn('Error reconciling collections on login:', e);
-      }
+  const persistSessionToken = async (identifier: string, token: string) => {
+    try {
+      await Keychain.setGenericPassword(identifier, token, {
+        accessControl: Keychain.ACCESS_CONTROL.BIOMETRY_ANY_OR_DEVICE_PASSCODE
+      });
+    } catch {
+      await Keychain.setGenericPassword(identifier, token);
     }
+    await AsyncStorage.removeItem('AUTH_TOKEN');
+    setInMemoryAuthToken(token);
+    setAuthToken('Bearer ' + token);
+  };
+
+  const establishCustomerSession = async (data: any, fallbackIdentifier: string) => {
+    const token: string = data?.token || data?.access_token || '';
+    if (!token) {
+      throw new Error('सर्व्हरकडून वैध लॉगिन टोकन मिळाले नाही.');
+    }
+    await persistSessionToken(fallbackIdentifier, token);
+    await AsyncStorage.removeItem('AGENT_ID');
+    await AsyncStorage.setItem('CURRENT_ROLE', 'CUSTOMER');
+
+    const custId = String(data?.customerId ?? data?.id ?? '');
+    const custUser: User = {
+      id: `cst_${custId}`,
+      name: data?.username || data?.customerName || fallbackIdentifier,
+      email: '',
+      phone: data?.mobileNo || '',
+      role: 'CUSTOMER',
+      accountNumber: data?.cifNo || '',
+      username: data?.cifNo || data?.mobileNo || fallbackIdentifier,
+    };
+
+    await AsyncStorage.setItem('CURRENT_USER', JSON.stringify(custUser));
+    setCurrentUser(custUser);
+    setCurrentRole('CUSTOMER');
+    setIsAuthenticated(true);
+  };
+
+  const activateCustomerTempPin = async (mobileNo: string, cifNo: string, newPin: string) => {
+    const res = await apiClient.post('/api/Auth/customer/activate-temp-pin', {
+      mobileNo: mobileNo.trim(),
+      cifNo: cifNo.trim(),
+      newPin: newPin.trim(),
+    });
+    await establishCustomerSession(res.data, mobileNo.trim());
+  };
+
+  const login = async (username?: string, password?: string, role?: UserRole, _credential?: any) => {
+    const cleanUsername = (username || '').trim();
+    const cleanPassword = password || '';
+
+    if (!cleanUsername || !cleanPassword) {
+      throw new Error('युजरनेम आणि पासवर्ड आवश्यक आहे.');
+    }
+
+    const response = await apiClient.post('/api/Auth/login', {
+      username: cleanUsername,
+      password: cleanPassword,
+      ...(role === 'CUSTOMER' ? { loginAs: 'CUSTOMER' } : {}),
+    });
+
+    const token: string = response.data?.token || response.data?.access_token || '';
+    if (!token) {
+      throw new Error('सर्व्हरकडून वैध लॉगिन टोकन मिळाले नाही.');
+    }
+
+    const rawServerRole = String(response.data?.role || '').trim();
+    const serverRoleUpper = rawServerRole.toUpperCase();
+
+    if (serverRoleUpper === 'CUSTOMER') {
+      await establishCustomerSession(response.data, cleanUsername);
+      return;
+    }
+
+    await persistSessionToken(cleanUsername, token);
+
+    let targetRole: UserRole = 'AGENT';
+    let loggedInUser: User = EMPTY_USER;
+
+    if (serverRoleUpper === 'AGENT') {
+      targetRole = 'AGENT';
+      const extractedAgentId = (
+        response.data?.agentId ??
+        response.data?.pigmyAgentID ??
+        response.data?.id ??
+        response.data?.userId ??
+        response.data?.user?.id ??
+        response.data?.agent?.agentId ??
+        ''
+      );
+      const rawAgentId = String(extractedAgentId).replace('agt_', '').trim();
+      if (!rawAgentId) {
+        throw new Error('एजंट प्रोफाइल आयडी सर्व्हरकडून मिळाला नाही.');
+      }
+
+      await AsyncStorage.setItem('AGENT_ID', rawAgentId);
+      await AsyncStorage.setItem('CURRENT_ROLE', 'AGENT');
+
+      let agentDetails: any = null;
+      try {
+        agentDetails = await fetchAgentProfile(rawAgentId);
+      } catch (e) {
+        console.log('Error fetching agent details:', e);
+      }
+
+      loggedInUser = {
+        id: `usr_${rawAgentId}`,
+        name: agentDetails?.agentName || response.data?.name || response.data?.agentName || response.data?.username || cleanUsername,
+        email: '',
+        phone: agentDetails?.mobileNo || agentDetails?.phone || response.data?.mobileNo || response.data?.phone || '',
+        role: 'AGENT',
+        agentId: `agt_${rawAgentId}`,
+        limit: agentDetails?.limit || agentDetails?.dailyLimit || response.data?.limit,
+        username: agentDetails?.userName || response.data?.username || cleanUsername,
+      };
+
+      await AsyncStorage.setItem('CURRENT_USER', JSON.stringify(loggedInUser));
+      setCurrentUser(loggedInUser);
+      setCurrentRole('AGENT');
+      setIsAuthenticated(true);
+
+      await Promise.allSettled([
+        fetchAgentAccounts(rawAgentId),
+        fetchAgentCustomers(rawAgentId),
+        fetchLockStatus(rawAgentId),
+        fetchDashboardSummary(rawAgentId),
+        fetchAndReconcileTodaysCollections(rawAgentId),
+      ]);
+      return;
+    }
+
+    // Staff / Manager / Admin roles
+    targetRole = 'ADMIN';
+    await AsyncStorage.removeItem('AGENT_ID');
+    await AsyncStorage.setItem('CURRENT_ROLE', 'ADMIN');
+
+    const staffName = response.data?.branchName
+      ? `${response.data?.username || cleanUsername} (${response.data.branchName})`
+      : (response.data?.name || response.data?.username || cleanUsername);
+
+    loggedInUser = {
+      id: `usr_staff_${response.data?.username || cleanUsername}`,
+      name: staffName,
+      email: '',
+      phone: response.data?.mobileNo || '',
+      role: 'ADMIN',
+      username: response.data?.username || cleanUsername,
+    };
 
     await AsyncStorage.setItem('CURRENT_USER', JSON.stringify(loggedInUser));
     setCurrentUser(loggedInUser);
     setCurrentRole(targetRole);
     setIsAuthenticated(true);
+    fetchAdminSummary().catch(() => {});
   };
 
   const logout = async () => {
-    await Keychain.resetGenericPassword();
-    await AsyncStorage.removeItem('AGENT_ID');
-    await AsyncStorage.removeItem('AUTH_TOKEN');
+    try {
+      await Keychain.resetGenericPassword();
+    } catch {}
+    await AsyncStorage.multiRemove([
+      'AGENT_ID',
+      'AUTH_TOKEN',
+      'CURRENT_ROLE',
+      'CURRENT_USER',
+      'CACHED_DASHBOARD_SUMMARY',
+      'PENDING_COLLECTIONS',
+      'TODAYS_COLLECTIONS_HISTORY',
+      'OFFLINE_ACCOUNTS',
+      'OFFLINE_CUSTOMERS'
+    ]);
+    setInMemoryAuthToken('');
     setAuthToken('');
     setAgentCustomers([]);
+    setAccounts([]);
+    setCollections([]);
+    setAgents([]);
+    setServerDashboardSummary(null);
+    setServerLockStatus(null);
+    setCurrentUser(EMPTY_USER);
+    setCurrentRole('AGENT');
     setIsAuthenticated(false);
   };
+
+  useEffect(() => {
+    registerUnauthorizedHandler(() => {
+      logout();
+    });
+    return () => registerUnauthorizedHandler(null);
+  }, []);
 
   const addCollectionRecord = async (
     accountId: string,
@@ -624,6 +752,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       amount,
       paymentMode,
       timestamp: timestampStr,
+      collectionTimestamp: now.toISOString(),
       status: 'VERIFIED',
       syncStatus: 'SYNC_PENDING',
       notes,
@@ -675,11 +804,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         oldAccountNo: account.oldAccountNo || '',
         amount,
         timestamp: now.toISOString(),
+        collectionDate: now.toISOString(),
         transactionId: newRecord.transactionId,
         offlineSync: false,
         agentId: rawAgentId,
         paymentMode
       });
+
+      fetchDashboardSummary(rawAgentId).catch(() => {});
       
       // If success, update local status to SYNCED
       setCollections((prev) => prev.map(c => c.id === newRecord.id ? { ...c, syncStatus: 'SYNCED' } : c));
@@ -874,6 +1006,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       productTitle,
       paymentMode,
       timestamp: timestampStr,
+      collectionTimestamp: now.toISOString(),
       status: 'VERIFIED',
       syncStatus: 'SYNC_PENDING',
       notes: remarks || '',
@@ -927,8 +1060,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           paymentMode,
           syncReferenceId: uuid,
           receiptNo: defaultReceiptNo,
-          latitude: latitude || '16.7050',
-          longitude: longitude || '74.2433',
+          latitude: latitude || undefined,
+          longitude: longitude || undefined,
+          collectionDate: now.toISOString(),
           remarks: remarks || 'हप्ता वसुली'
         });
 
@@ -1021,8 +1155,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await AsyncStorage.setItem('PENDING_COLLECTIONS', JSON.stringify(pendingQueue2));
       }
 
+      fetchDashboardSummary(rawAgentId).catch(() => {});
+
     } catch (err: any) {
-      if (err.response && err.response.status === 400 && err.response.data && err.response.data.message) {
+      if (err.response && (err.response.status === 400 || err.response.status === 409) && err.response.data && err.response.data.message) {
         const pendingRaw2 = await AsyncStorage.getItem('PENDING_COLLECTIONS');
         if (pendingRaw2) {
           const pendingQueue2 = JSON.parse(pendingRaw2).filter((c: CollectionRecord) => c.id !== newRecord.id);
@@ -1030,7 +1166,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         setCollections(prev => prev.filter(c => c.id !== newRecord.id));
 
-        if (err.response.data.status === 'LOCKED' || (err.response.data.message && err.response.data.message.includes('à¤²à¥‰à¤•'))) {
+        if (err.response.data.status === 'LOCKED' || (err.response.data.message && err.response.data.message.includes('लॉक'))) {
           setServerLockStatus({
             agentId: rawAgentId,
             collect_Pigmi: 0,
@@ -1051,21 +1187,71 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const clearLastReceipt = () => setLastCreatedReceipt(null);
 
+  const fetchDashboardSummary = async (agentIdInput?: string | number): Promise<DashboardSummary> => {
+    const rawId = (agentIdInput || currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')) || '').toString().replace('agt_', '');
+    try {
+      const res = await apiClient.get('/api/dashboard/summary', {
+        params: rawId ? { agentId: rawId } : undefined,
+      });
+      const d = res.data || {};
+      const summary: DashboardSummary = {
+        date: d.date || new Date().toISOString().split('T')[0],
+        openingBalance: Number(d.openingBalance ?? 0),
+        todaysCollection: Number(d.todaysCollection ?? 0),
+        todaysRemittance: Number(d.todaysRemittance ?? 0),
+        totalReceipts: Number(d.totalReceipts ?? 0),
+        closingBalance: Number(d.closingBalance ?? d.pendingCashInHand ?? 0),
+        pendingCashInHand: Number(d.pendingCashInHand ?? d.closingBalance ?? 0),
+        lockStatus: d.lockStatus,
+        isLocked: Boolean(d.isLocked),
+      };
+      setServerDashboardSummary(summary);
+      AsyncStorage.setItem('CACHED_DASHBOARD_SUMMARY', JSON.stringify(summary)).catch(() => {});
+      return summary;
+    } catch (err: any) {
+      console.warn('Failed to fetch dashboard summary from server:', err?.message);
+      const cachedRaw = await AsyncStorage.getItem('CACHED_DASHBOARD_SUMMARY').catch(() => null);
+      if (cachedRaw) {
+        const parsed: DashboardSummary = JSON.parse(cachedRaw);
+        setServerDashboardSummary(parsed);
+        return parsed;
+      }
+      return getDashboardSummary();
+    }
+  };
+
   const getDashboardSummary = (): DashboardSummary => {
-    const rawId = (currentUser.agentId || agentId || '1').toString().replace('agt_', '');
-    const myCollections = collections.filter(c => 
-      !c.agentId || 
-      c.agentId === `agt_${rawId}` || 
-      c.agentId === rawId || 
-      c.agentId.replace('agt_', '') === rawId
+    const rawId = (currentUser.agentId || agentId || '').toString().replace('agt_', '');
+    const pendingLocal = collections.filter(c =>
+      c.syncStatus === 'SYNC_PENDING' &&
+      (!rawId || !c.agentId || c.agentId === `agt_${rawId}` || c.agentId === rawId || c.agentId.replace('agt_', '') === rawId)
+    );
+    const pendingSum = pendingLocal.reduce((sum, c) => sum + c.amount, 0);
+
+    if (serverDashboardSummary) {
+      const opening = serverDashboardSummary.openingBalance || 0;
+      const todaysCollection = (serverDashboardSummary.todaysCollection || 0) + pendingSum;
+      const todaysRemittance = serverDashboardSummary.todaysRemittance || 0;
+      return {
+        ...serverDashboardSummary,
+        openingBalance: opening,
+        todaysCollection,
+        totalReceipts: (serverDashboardSummary.totalReceipts || 0) + pendingLocal.length,
+        closingBalance: Math.max(0, opening + todaysCollection - todaysRemittance),
+      };
+    }
+
+    const myCollections = collections.filter(c =>
+      !rawId || !c.agentId || c.agentId === `agt_${rawId}` || c.agentId === rawId || c.agentId.replace('agt_', '') === rawId
     );
     const todaysCollection = myCollections.reduce((sum, c) => sum + c.amount, 0);
     return {
       date: new Date().toISOString().split('T')[0],
-      openingBalance: 12500,
+      openingBalance: 0,
       todaysCollection,
+      todaysRemittance: 0,
       totalReceipts: myCollections.length,
-      closingBalance: 12500 + todaysCollection,
+      closingBalance: todaysCollection,
     };
   };
 
@@ -1079,7 +1265,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       collect_Pigmi: 1,
       is_pending: 0,
       status: 'ALLOWED',
-      message: 'à¤•à¤®à¤¿à¤¶à¤¨ à¤µ à¤ªà¤¿à¤—à¥à¤®à¥€ à¤•à¤²à¥‡à¤•à¥à¤¶à¤¨à¤¸à¤¾à¤ à¥€ à¤à¤œà¤‚à¤Ÿ à¤…à¤§à¤¿à¤•à¥ƒà¤¤ à¤†à¤¹à¥‡.',
+      message: 'कमिशन व पिग्मी कलेक्शनसाठी एजंट अधिकृत आहे.',
       previousDaysCollectionDetails: []
     };
   };
@@ -1108,7 +1294,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       return response.data;
     } catch (err: any) {
-      let errorMsg = 'à¤—à¥à¤°à¤¾à¤¹à¤• à¤¨à¥‹à¤‚à¤¦à¤£à¥€ à¤•à¤°à¤¤à¤¾à¤¨à¤¾ à¤¤à¥à¤°à¥à¤Ÿà¥€ à¤†à¤²à¥€.';
+      let errorMsg = 'ग्राहक नोंदणी करताना त्रुटी आली.';
       if (err.response && err.response.data) {
         if (err.response.data.message) {
           errorMsg = err.response.data.message;
@@ -1177,39 +1363,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const updatedReceiptMap: { [id: string]: { receiptNo?: string; newBalance?: number } } = {};
 
       let lastErrorMsg = '';
-      // Try bulk endpoint first if available
-      let bulkSucceeded = false;
-      try {
-        const apiItems = pendingQueue.map(item => {
-          const matchedAcc = accounts.find(a => a.id === item.accountId || a.accountNumber === item.accountNumber);
-          return {
-            pigmyAccountId: parseInt(String(item.accountId).replace('acc_', ''), 10) || 1,
-            accountNo: item.accountNumber || matchedAcc?.accountNumber || '',
-            oldAccountNo: item.oldAccountNo || matchedAcc?.oldAccountNo || '',
-            collectionAmount: item.amount,
-            collectionDate: new Date().toISOString(),
-            receiptNo: item.receiptNo,
-            transactionId: item.transactionId
-          };
-        });
+      const pigmyItems = pendingQueue.filter(item => !item.productType || item.productType === 'PIGMY');
+      const nonPigmyItems = pendingQueue.filter(item => item.productType && item.productType !== 'PIGMY');
+      const individualItems: CollectionRecord[] = [...nonPigmyItems];
 
-        await apiClient.post('/api/PigmyApp/BulkCollection', {
-          agentId: rawAgentId,
-          items: apiItems
-        });
-        bulkSucceeded = true;
-        pendingQueue.forEach(p => syncedIds.push(p.id));
-      } catch (bulkErr: any) {
-        const bMsg = bulkErr?.response?.data?.message || bulkErr?.response?.data || bulkErr?.message;
-        if (bMsg) lastErrorMsg = typeof bMsg === 'string' ? bMsg : (bMsg.message || JSON.stringify(bMsg));
-        console.warn('Bulk endpoint failed, falling back to individual sync:', bulkErr?.message);
+      // 1. Bulk sync PIGMY items only (preserving original collectionTimestamp)
+      if (pigmyItems.length > 0) {
+        try {
+          const apiItems = pigmyItems.map(item => {
+            const matchedAcc = accounts.find(a => a.id === item.accountId || a.accountNumber === item.accountNumber);
+            return {
+              pigmyAccountId: parseInt(String(item.accountId).replace('acc_', ''), 10) || 1,
+              accountNo: item.accountNumber || matchedAcc?.accountNumber || '',
+              oldAccountNo: item.oldAccountNo || matchedAcc?.oldAccountNo || '',
+              collectionAmount: item.amount,
+              collectionDate: item.collectionTimestamp || new Date().toISOString(),
+              receiptNo: item.receiptNo,
+              transactionId: item.transactionId
+            };
+          });
+
+          await apiClient.post('/api/PigmyApp/BulkCollection', {
+            agentId: rawAgentId,
+            items: apiItems
+          });
+          pigmyItems.forEach(p => syncedIds.push(p.id));
+        } catch (bulkErr: any) {
+          const bMsg = bulkErr?.response?.data?.message || bulkErr?.response?.data || bulkErr?.message;
+          if (bMsg) lastErrorMsg = typeof bMsg === 'string' ? bMsg : (bMsg.message || JSON.stringify(bMsg));
+          console.warn('Bulk endpoint failed, falling back to individual sync:', bulkErr?.message);
+          individualItems.push(...pigmyItems);
+        }
       }
 
-      // If bulk failed, sync each item individually
-      if (!bulkSucceeded) {
-        for (const item of pendingQueue) {
+      // 2. Sync remaining (non-Pigmy + failed Pigmy fallback) items individually with original collectionDate & offlineSync=true
+      if (individualItems.length > 0) {
+        for (const item of individualItems) {
           try {
-            const rawAccountId = parseInt(String(item.accountId).replace('acc_', ''), 10) || 1;
+            const rawAccountId = parseInt(String(item.accountId).replace(/^[a-z_]+/, ''), 10) || 1;
+            const originalIsoDate = item.collectionTimestamp || new Date().toISOString();
             const uuid = item.syncReferenceId || 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
               const r = (Math.random() * 16) | 0;
               const v = c === 'x' ? r : (r & 0x3) | 0x8;
@@ -1225,6 +1417,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 paymentMode: item.paymentMode,
                 syncReferenceId: uuid,
                 receiptNo: item.receiptNo,
+                collectionDate: originalIsoDate,
+                offlineSync: true,
                 remarks: item.remarks || item.notes || 'हप्ता वसुली'
               });
             } else if (item.productType === 'SAVING') {
@@ -1235,6 +1429,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 paymentMode: item.paymentMode,
                 syncReferenceId: uuid,
                 receiptNo: item.receiptNo,
+                collectionDate: originalIsoDate,
+                offlineSync: true,
                 remarks: item.remarks || item.notes || 'बचत ठेव'
               });
             } else if (item.productType === 'RD') {
@@ -1245,36 +1441,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 paymentMode: item.paymentMode,
                 syncReferenceId: uuid,
                 receiptNo: item.receiptNo,
+                collectionDate: originalIsoDate,
+                offlineSync: true,
                 remarks: item.remarks || item.notes || 'आरडी हप्ता'
               });
             } else {
-              // PIGMY
-              try {
-                res = await apiClient.post('/api/PigmyApp/collect', {
-                  agentId: rawAgentId,
-                  pigmyAccountId: rawAccountId,
-                  amount: item.amount,
-                  paymentMode: item.paymentMode,
-                  syncReferenceId: uuid,
-                  receiptNo: item.receiptNo,
-                  remarks: item.remarks || item.notes || 'दैनिक ठेव'
-                });
-              } catch (pigmyErr: any) {
-                res = await apiClient.post('/api/collections', {
-                  accountId: rawAccountId,
-                  pigmyAccountId: rawAccountId,
-                  accountNo: item.accountNumber,
-                  oldAccountNo: item.oldAccountNo || '',
-                  amount: item.amount,
-                  timestamp: new Date().toISOString(),
-                  transactionId: item.transactionId,
-                  syncReferenceId: uuid,
-                  receiptNo: item.receiptNo,
-                  offlineSync: false,
-                  agentId: rawAgentId,
-                  paymentMode: item.paymentMode
-                });
-              }
+              // PIGMY individual offline sync via /api/collections (supports offlineSync + timestamp)
+              res = await apiClient.post('/api/collections', {
+                accountId: rawAccountId,
+                pigmyAccountId: rawAccountId,
+                accountNo: item.accountNumber,
+                oldAccountNo: item.oldAccountNo || '',
+                amount: item.amount,
+                timestamp: originalIsoDate,
+                collectionDate: originalIsoDate,
+                transactionId: item.transactionId,
+                syncReferenceId: uuid,
+                receiptNo: item.receiptNo,
+                offlineSync: true,
+                agentId: rawAgentId,
+                paymentMode: item.paymentMode
+              });
             }
 
             syncedIds.push(item.id);
@@ -1314,6 +1501,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } else {
           await AsyncStorage.removeItem('PENDING_COLLECTIONS');
         }
+
+        fetchDashboardSummary(rawAgentId).catch(() => {});
+        fetchLockStatus(rawAgentId).catch(() => {});
       }
 
       if (syncedIds.length === 0 && pendingQueue.length > 0) {
@@ -1401,28 +1591,237 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   };
 
-  const getCommissionReport = (fromDate: string, toDate: string): CommissionReport => {
+    const getCommissionReport = (fromDate: string, toDate: string): CommissionReport => {
     const report = getCollectionReport(fromDate, toDate);
-    const commissionRate = 2.5;
-    const calculatedCommission = (report.totalCollectedAmount * commissionRate) / 100;
-    
     return {
       agentId,
       fromDate,
       toDate,
       totalCollectedAmount: report.totalCollectedAmount,
-      commissionRate,
+      commissionRate: 0,
       rateType: 'PERCENTAGE',
-      calculatedCommission,
+      calculatedCommission: 0,
       paidCommission: 0,
-      pendingCommission: calculatedCommission,
+      pendingCommission: 0,
       paidVouchersCount: 0
     };
   };
 
+  const fetchPassbookStatement = async (
+    accountId: string,
+    fromDate?: string,
+    toDate?: string
+  ): Promise<PassbookStatement> => {
+    const rawAccId = String(accountId).replace('acc_', '');
+    try {
+      const res = await apiClient.get(`/api/reports/passbook/${rawAccId}`, {
+        params: {
+          ...(fromDate ? { fromDate } : {}),
+          ...(toDate ? { toDate } : {}),
+        },
+      });
+      const d = res.data || {};
+      const serverTxs: PassbookTransaction[] = Array.isArray(d.transactions)
+        ? d.transactions.map((t: any) => ({
+            collectionId: t.transactionId || t.collectionId || t.referenceId || String(Math.random()),
+            date: t.date || t.transactionDate || '',
+            receiptNo: t.referenceId || t.receiptNo || t.narration || '-',
+            creditAmount: Number(t.crAmount ?? t.creditAmount ?? 0),
+            runningBalance: Number(t.balance ?? t.runningBalance ?? 0),
+            source: 'APP',
+          }))
+        : [];
+
+      // Overlay any unsynced offline receipts for this account
+      const pendingLocal = collections.filter(
+        c =>
+          c.syncStatus === 'SYNC_PENDING' &&
+          (String(c.accountId) === String(accountId) || String(c.accountId).replace('acc_', '') === rawAccId)
+      );
+      let running = Number(d.closingBalance ?? d.currentBalance ?? 0);
+      const pendingTxs: PassbookTransaction[] = pendingLocal.map(c => {
+        running += c.amount;
+        return {
+          collectionId: c.id,
+          date: c.timestamp,
+          receiptNo: `${c.receiptNo} (Pending Sync)`,
+          creditAmount: c.amount,
+          runningBalance: running,
+          source: 'APP',
+        };
+      });
+
+      const pendingTotal = pendingLocal.reduce((sum, c) => sum + c.amount, 0);
+      return {
+        pigmyAccountId: d.pigmyAccountId ?? rawAccId,
+        accountNo: d.accountNo || '',
+        memberName: d.memberName || '',
+        agentName: d.agentName || currentUser.name || '',
+        openingDate: d.openingDate || '',
+        fromDate: d.fromDate || fromDate || '',
+        toDate: d.toDate || toDate || new Date().toISOString().split('T')[0],
+        openingBalance: Number(d.openingBalance ?? 0),
+        totalCredit: Number(d.totalCredit ?? 0) + pendingTotal,
+        closingBalance: Number(d.closingBalance ?? 0) + pendingTotal,
+        currentTotalBalance: Number(d.currentBalance ?? d.currentTotalBalance ?? 0) + pendingTotal,
+        transactions: [...pendingTxs, ...serverTxs],
+      };
+    } catch (err: any) {
+      console.warn('Passbook API failed, falling back to local cache:', err?.message);
+      return getPassbookStatement(accountId, fromDate, toDate);
+    }
+  };
+
+  const fetchCollectionReport = async (fromDate?: string, toDate?: string): Promise<CollectionReport> => {
+    const todayIso = new Date().toISOString().split('T')[0];
+    const effectiveFrom = fromDate || todayIso;
+    const effectiveTo = toDate || todayIso;
+    try {
+      const res = await apiClient.get('/api/reports/collections', {
+        params: { fromDate: effectiveFrom, toDate: effectiveTo },
+      });
+      const d = res.data || {};
+      const items: CollectionReportItem[] = Array.isArray(d.collections)
+        ? d.collections.map((c: any) => ({
+            collectionId: c.collectionId || c.id || String(Math.random()),
+            receiptNo: c.receiptNo || '',
+            date: c.date || c.collectionDate || '',
+            pigmyAccountId: c.pigmyAccountId || c.accountId || '',
+            accountNo: c.accountNo || '',
+            memberName: c.memberName || c.customerName || '',
+            amount: Number(c.amount ?? 0),
+            source: c.source === 'MANUAL' ? 'MANUAL' : 'APP',
+          }))
+        : [];
+      return {
+        agentId: d.agentId ?? agentId,
+        fromDate: d.fromDate || effectiveFrom,
+        toDate: d.toDate || effectiveTo,
+        totalCollectedAmount: Number(d.totalCollectedAmount ?? 0),
+        totalReceiptsCount: Number(d.totalReceipts ?? items.length),
+        uniqueAccountsCount: new Set(items.map(i => String(i.pigmyAccountId))).size,
+        collections: items,
+      };
+    } catch (err: any) {
+      console.warn('Collection report API failed, falling back to local collections:', err?.message);
+      return getCollectionReport(effectiveFrom, effectiveTo);
+    }
+  };
+
+  const fetchCommissionReport = async (fromDate?: string, toDate?: string): Promise<CommissionReport> => {
+    const todayIso = new Date().toISOString().split('T')[0];
+    const effectiveFrom = fromDate || todayIso;
+    const effectiveTo = toDate || todayIso;
+    try {
+      const res = await apiClient.get('/api/reports/commission', {
+        params: { fromDate: effectiveFrom, toDate: effectiveTo },
+      });
+      const d = res.data || {};
+      return {
+        agentId: d.agentId ?? agentId,
+        fromDate: d.fromDate || effectiveFrom,
+        toDate: d.toDate || effectiveTo,
+        totalCollectedAmount: Number(d.totalCollectedAmount ?? 0),
+        commissionRate: Number(d.commissionRate ?? 0),
+        rateType: d.rateType === 'FLAT' ? 'FLAT' : 'PERCENTAGE',
+        calculatedCommission: Number(d.calculatedCommission ?? 0),
+        paidCommission: Number(d.paidCommission ?? 0),
+        pendingCommission: Number(d.pendingCommission ?? 0),
+        paidVouchersCount: Number(d.paidVouchersCount ?? 0),
+      };
+    } catch (err: any) {
+      console.warn('Commission report API failed, falling back cleanly:', err?.message);
+      return getCommissionReport(effectiveFrom, effectiveTo);
+    }
+  };
+
+  const fetchPigmyBookReport = async (
+    filter: 'TODAY' | 'LAST_7_DAYS' | 'THIS_MONTH' | 'LAST_MONTH'
+  ): Promise<{ totalCollection: number; dailyRecords: { date: string; customers: number; amount: number }[] }> => {
+    const res = await apiClient.get('/api/reports/pigmy-book', {
+      params: { filter },
+    });
+    const d = res.data || {};
+    const dailyRecords = Array.isArray(d.dailyRecords)
+      ? d.dailyRecords.map((r: any) => ({
+          date: r.date || '',
+          customers: Number(r.customers ?? 0),
+          amount: Number(r.amount ?? 0),
+        }))
+      : [];
+    return {
+      totalCollection: Number(d.totalCollection ?? 0),
+      dailyRecords,
+    };
+  };
+
+  const fetchAdminSummary = async () => {
+    const res = await apiClient.get('/api/Dashboard/mobile-admin-summary');
+    const d = res.data || {};
+
+    if (Array.isArray(d.agents)) {
+      const mappedAgents: AgentSummary[] = d.agents.map((a: any) => ({
+        id: a.id || `agt_${a.agentId ?? a.pigmyAgentID ?? ''}`,
+        name: a.name || a.agentName || 'Agent',
+        phone: a.phone || a.mobileNo || '',
+        assignedCustomersCount: Number(a.assignedCustomersCount ?? 0),
+        todayTargetAmount: Number(a.todayTargetAmount ?? 0),
+        todayCollectedAmount: Number(a.todayCollectedAmount ?? 0),
+        pendingCustomersCount: Number(a.pendingCustomersCount ?? 0),
+        status: a.status === 'ACTIVE' ? 'ACTIVE' : a.status === 'ON_FIELD' ? 'ON_FIELD' : 'OFFLINE',
+      }));
+      setAgents(mappedAgents);
+    }
+
+    if (Array.isArray(d.recentCollections)) {
+      const mappedCols: CollectionRecord[] = d.recentCollections.map((c: any, idx: number) => ({
+        id: `adm_col_${c.receiptNo || idx}`,
+        transactionId: c.receiptNo || `txn_${idx}`,
+        receiptNo: c.receiptNo || '',
+        accountId: c.accountNumber || '',
+        accountNumber: c.accountNumber || '',
+        customerName: c.customerName || '',
+        agentId: c.agentName || '',
+        agentName: c.agentName || '',
+        amount: Number(c.amount ?? 0),
+        productType: 'PIGMY',
+        paymentMode: (c.paymentMode === 'UPI' || c.paymentMode === 'BANK_TRANSFER' ? c.paymentMode : 'CASH'),
+        timestamp: c.timestamp ? new Date(c.timestamp).toLocaleString('en-IN') : '',
+        collectionTimestamp: c.timestamp,
+        status: 'VERIFIED',
+        syncStatus: 'SYNCED',
+      }));
+      setCollections(mappedCols);
+    }
+
+    return {
+      totalBalance: Number(d.totalBalance ?? 0),
+      todaysCollection: Number(d.todaysCollection ?? 0),
+      todaysReceiptsCount: Number(d.todaysReceiptsCount ?? 0),
+      activeAccountsCount: Number(d.activeAccountsCount ?? 0),
+      activeAgentsCount: Number(d.activeAgentsCount ?? 0),
+    };
+  };
+
+  const fetchCustomerPortalOverview = async () => {
+    const [sumRes, accRes] = await Promise.all([
+      apiClient.get('/api/customer/summary'),
+      apiClient.get('/api/customer/accounts'),
+    ]);
+    return {
+      summary: sumRes.data,
+      accounts: accRes.data,
+    };
+  };
+
+  const fetchCustomerAccountPassbook = async (productType: string, accountId: number) => {
+    const res = await apiClient.get(`/api/customer/passbook/${productType}/${accountId}`);
+    return res.data;
+  };
+
   // Save today's collection history to local storage so they remain in "Collected" tab even after sync
   useEffect(() => {
-    if (!isAuthenticated || collections.length === 0) return;
+    if (!isAuthenticated || currentRole !== 'AGENT' || collections.length === 0) return;
     const todayStr = new Date().toLocaleDateString();
     const todaysCollections = collections.filter(c => c.timestamp.startsWith(todayStr));
     if (todaysCollections.length > 0) {
@@ -1437,9 +1836,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [collections, isAuthenticated]);
 
-  // Automatic Background Sync Listener
+  // Automatic Background Sync Listener (Agent only)
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || currentRole !== 'AGENT') return;
 
     const handleNetworkChange = (state: any) => {
       if (state.isConnected) {
@@ -1481,14 +1880,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         lastCreatedReceipt,
         clearLastReceipt,
         getDashboardSummary,
+        fetchDashboardSummary,
         checkLockStatus,
         createCustomer,
         fetchPigmySchemes,
         fetchDropdowns,
         bulkSyncCollections,
         getPassbookStatement,
+        fetchPassbookStatement,
         getCollectionReport,
+        fetchCollectionReport,
         getCommissionReport,
+        fetchCommissionReport,
+        fetchPigmyBookReport,
+        fetchAdminSummary,
+        activateCustomerTempPin,
+        fetchCustomerPortalOverview,
+        fetchCustomerAccountPassbook,
         authToken,
         isLoadingAccounts,
         refreshAgentData,
