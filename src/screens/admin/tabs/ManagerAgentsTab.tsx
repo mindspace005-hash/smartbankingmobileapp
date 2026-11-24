@@ -35,7 +35,7 @@ import { openPhoneDialer, openWhatsAppMessage } from '../../../utils/communicati
 import { useManagerDashboard } from '../ManagerDashboardContext';
 
 export const ManagerAgentsTab: React.FC = () => {
-  const { collections, toggleManagerAgentLock, acceptManagerAgentRemittance } = useAuth();
+  const { isDemoMode, collections, toggleManagerAgentLock, acceptManagerAgentRemittance } = useAuth();
   const { colors } = useThemeColors();
   const { showToast } = useToast();
   const { refreshing, reloadData, data, onSelectReceipt } = useManagerDashboard();
@@ -43,6 +43,7 @@ export const ManagerAgentsTab: React.FC = () => {
   const [remitAgent, setRemitAgent] = useState<ManagerAgentControlItem | null>(null);
   const [remitAmount, setRemitAmount] = useState('');
   const [receiptsAgent, setReceiptsAgent] = useState<ManagerAgentControlItem | null>(null);
+  const [busyAction, setBusyAction] = useState(false);
 
   const agents = data?.agents || [];
 
@@ -60,33 +61,56 @@ export const ManagerAgentsTab: React.FC = () => {
   };
 
   const handleConfirmRemit = async () => {
-    if (!remitAgent) return;
+    if (!remitAgent || busyAction) return;
     const amt = parseFloat(remitAmount);
     if (!amt || amt <= 0) {
       triggerErrorHaptic();
       showToast('कृपया वैध रोख रक्कम प्रविष्ट करा.', 'warning');
       return;
     }
-    await acceptManagerAgentRemittance(remitAgent.id, amt);
-    triggerSuccessHaptic();
-    showToast(
-      `${remitAgent.name} कडून ₹${amt.toLocaleString('en-IN')} रोख शाखेत जमा नोंदवली!`,
-      'success',
-      'रोख जमा पूर्ण'
-    );
-    setRemitAgent(null);
-    setRemitAmount('');
+    setBusyAction(true);
+    try {
+      await acceptManagerAgentRemittance(remitAgent.id, amt);
+      triggerSuccessHaptic();
+      showToast(
+        `${remitAgent.name} कडून ₹${amt.toLocaleString('en-IN')} रोख शाखेत जमा नोंदवली!`,
+        'success',
+        'रोख जमा पूर्ण'
+      );
+      setRemitAgent(null);
+      setRemitAmount('');
+      if (!isDemoMode) {
+        await reloadData();
+      }
+    } catch (err: any) {
+      triggerErrorHaptic();
+      showToast(err?.message || 'रोख जमा नोंदवताना त्रुटी आली.', 'error', 'सर्व्हर त्रुटी');
+    } finally {
+      setBusyAction(false);
+    }
   };
 
   const handleToggleLock = async (agent: ManagerAgentControlItem) => {
-    await toggleManagerAgentLock(agent.id);
-    triggerLightHaptic();
-    showToast(
-      agent.isLocked
-        ? `${agent.name} यांना वसुलीसाठी अनलॉक केले.`
-        : `${agent.name} यांची वसुली तात्पुरती लॉक केली.`,
-      agent.isLocked ? 'success' : 'warning'
-    );
+    if (busyAction) return;
+    setBusyAction(true);
+    try {
+      await toggleManagerAgentLock(agent.id);
+      triggerLightHaptic();
+      showToast(
+        agent.isLocked
+          ? `${agent.name} यांना वसुलीसाठी अनलॉक केले.`
+          : `${agent.name} यांची वसुली तात्पुरती लॉक केली.`,
+        agent.isLocked ? 'success' : 'warning'
+      );
+      if (!isDemoMode) {
+        await reloadData();
+      }
+    } catch (err: any) {
+      triggerErrorHaptic();
+      showToast(err?.message || 'एजंट लॉक बदलताना त्रुटी आली.', 'error', 'सर्व्हर त्रुटी');
+    } finally {
+      setBusyAction(false);
+    }
   };
 
   const agentDrilldownReceipts = useMemo(() => {

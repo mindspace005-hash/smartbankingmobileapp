@@ -29,12 +29,13 @@ import { useManagerDashboard } from '../ManagerDashboardContext';
 type FilterType = 'ALL' | ManagerApprovalCategory;
 
 export const ManagerApprovalsTab: React.FC = () => {
-  const { updateManagerApproval } = useAuth();
+  const { isDemoMode, updateManagerApproval } = useAuth();
   const { colors } = useThemeColors();
   const { showToast } = useToast();
   const { refreshing, reloadData, data } = useManagerDashboard();
 
   const [categoryFilter, setCategoryFilter] = useState<FilterType>('ALL');
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const approvals = data?.approvals || [];
 
@@ -67,16 +68,28 @@ export const ManagerApprovalsTab: React.FC = () => {
   );
 
   const handleDecision = async (item: ManagerApprovalItem, status: ManagerApprovalStatus) => {
-    await updateManagerApproval(item.id, status);
-    if (status === 'APPROVED') {
-      triggerSuccessHaptic();
-      showToast(`${item.title} — मंजूर केले!`, 'success', 'मंजुरी पूर्ण');
-    } else if (status === 'HOLD') {
-      triggerLightHaptic();
-      showToast(`${item.title} — पुनर्विचारासाठी थांबवले.`, 'warning', 'Hold');
-    } else {
+    if (busyId) return;
+    setBusyId(item.id);
+    try {
+      await updateManagerApproval(item.id, status);
+      if (status === 'APPROVED') {
+        triggerSuccessHaptic();
+        showToast(`${item.title} — मंजूर केले!`, 'success', 'मंजुरी पूर्ण');
+      } else if (status === 'HOLD') {
+        triggerLightHaptic();
+        showToast(`${item.title} — पुनर्विचारासाठी थांबवले.`, 'warning', 'Hold');
+      } else {
+        triggerErrorHaptic();
+        showToast(`${item.title} — नाकारले.`, 'error', 'अर्ज नाकारला');
+      }
+      if (!isDemoMode) {
+        await reloadData();
+      }
+    } catch (err: any) {
       triggerErrorHaptic();
-      showToast(`${item.title} — नाकारले.`, 'error', 'अर्ज नाकारला');
+      showToast(err?.message || 'निर्णय जतन करताना त्रुटी आली.', 'error', 'सर्व्हर त्रुटी');
+    } finally {
+      setBusyId(null);
     }
   };
 

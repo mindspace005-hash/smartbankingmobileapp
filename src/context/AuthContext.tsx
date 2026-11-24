@@ -1513,26 +1513,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             pigmyAccountId: rawAccountId,
             amount,
             paymentMode,
+            transactionId: newRecord.transactionId,
             syncReferenceId: uuid,
             receiptNo: defaultReceiptNo,
             remarks: remarks || 'दैनिक ठेव'
           });
         } catch (pigmyErr: any) {
-          // Fallback to existing collections endpoint
-          response = await apiClient.post('/api/collections', {
-            accountId: rawAccountId,
-            pigmyAccountId: rawAccountId,
-            accountNo,
-            oldAccountNo: oldAccountNo || '',
-            amount,
-            timestamp: now.toISOString(),
-            transactionId: newRecord.transactionId,
-            syncReferenceId: uuid,
-            receiptNo: defaultReceiptNo,
-            offlineSync: false,
-            agentId: rawAgentId,
-            paymentMode
-          });
+          const pStatus = pigmyErr?.response?.status;
+          // Only fall back to legacy /api/collections if /api/PigmyApp/collect endpoint is unavailable (404/405)
+          if (pStatus === 404 || pStatus === 405) {
+            response = await apiClient.post('/api/collections', {
+              accountId: rawAccountId,
+              pigmyAccountId: rawAccountId,
+              accountNo,
+              oldAccountNo: oldAccountNo || '',
+              amount,
+              timestamp: now.toISOString(),
+              transactionId: newRecord.transactionId,
+              syncReferenceId: uuid,
+              receiptNo: defaultReceiptNo,
+              offlineSync: false,
+              agentId: rawAgentId,
+              paymentMode
+            });
+          } else {
+            throw pigmyErr;
+          }
         }
 
         if (response?.data) {
@@ -1556,27 +1562,77 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       fetchDashboardSummary(rawAgentId).catch(() => {});
 
     } catch (err: any) {
-      if (err.response && (err.response.status === 400 || err.response.status === 409) && err.response.data && err.response.data.message) {
+      if (err?.response) {
+        // Server explicitly rejected the request (4xx/5xx): NEVER hide as "Saved Offline"!
         const pendingRaw2 = await AsyncStorage.getItem('PENDING_COLLECTIONS');
         if (pendingRaw2) {
           const pendingQueue2 = JSON.parse(pendingRaw2).filter((c: CollectionRecord) => c.id !== newRecord.id);
           await AsyncStorage.setItem('PENDING_COLLECTIONS', JSON.stringify(pendingQueue2));
         }
         setCollections(prev => prev.filter(c => c.id !== newRecord.id));
+        setLastCreatedReceipt(prev => (prev?.id === newRecord.id ? null : prev));
 
-        if (err.response.data.status === 'LOCKED' || (err.response.data.message && err.response.data.message.includes('लॉक'))) {
+        // Rollback optimistic local balances
+        if (productType === 'PIGMY') {
+          setAccounts(prevAccounts =>
+            prevAccounts.map(acc =>
+              acc.id === String(accountId) || acc.id === `acc_${accountId}` || acc.accountNumber === accountNo
+                ? {
+                    ...acc,
+                    currentBalance: Math.max(0, acc.currentBalance - amount),
+                    totalCollected: Math.max(0, acc.totalCollected - amount),
+                  }
+                : acc
+            )
+          );
+        }
+        setAgents(prevAgents =>
+          prevAgents.map(agt =>
+            agt.id === agentId
+              ? { ...agt, todayCollectedAmount: Math.max(0, agt.todayCollectedAmount - amount) }
+              : agt
+          )
+        );
+
+        const status = err.response.status;
+        const data = err.response.data;
+        let serverMsg = '';
+        if (typeof data === 'string' && data.trim()) {
+          serverMsg = data.trim();
+        } else if (data?.message) {
+          serverMsg = String(data.message);
+        } else if (data?.errors && typeof data.errors === 'object') {
+          const firstErr = Object.values(data.errors).flat().find(Boolean);
+          if (firstErr) serverMsg = String(firstErr);
+        } else if (data?.title) {
+          serverMsg = String(data.title);
+        }
+        if (!serverMsg) {
+          serverMsg =
+            status === 403
+              ? 'वसुलीची परवानगी नाही किंवा एजंट खाते लॉक आहे.'
+              : `सर्व्हर त्रुटी (HTTP ${status}) — पावती सेव्ह झाली नाही.`;
+        }
+
+        if (
+          status === 403 ||
+          data?.status === 'LOCKED' ||
+          serverMsg.includes('लॉक') ||
+          serverMsg.toLowerCase().includes('locked')
+        ) {
           setServerLockStatus({
             agentId: rawAgentId,
             collect_Pigmi: 0,
             is_pending: 1,
             status: 'LOCKED',
-            message: err.response.data.message,
+            message: serverMsg,
             previousDaysCollectionDetails: []
           });
         }
-        throw new Error(err.response.data.message);
+        throw new Error(serverMsg);
       } else {
-        console.warn('Network error or API failed, keeping as SYNC_PENDING. Will sync later.', err.message);
+        // Genuine offline / network timeout: keep in AsyncStorage queue for auto-sync
+        console.warn('Network error (offline), keeping as SYNC_PENDING. Will sync later.', err?.message);
       }
     }
 
@@ -2646,8 +2702,70 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
-    // Live CBS Mode: gracefully aggregate /api/Dashboard/summary + /api/Dashboard/mobile-admin-summary
+    // Live CBS Mode: call Phase 2 /api/mobile-manager/command-center first (graceful fallback on 404)
     const branchParam = branchId !== 'ALL' ? { branchId } : undefined;
+    try {
+      const cmdRes = await apiClient.get('/api/mobile-manager/command-center', { params: branchParam });
+      const payload = cmdRes.data || {};
+      if (payload.portfolio) {
+        if (Array.isArray(payload.recentCollections)) {
+          const mappedCols: CollectionRecord[] = payload.recentCollections.map((c: any, idx: number) => ({
+            id: c.id || `adm_col_${c.receiptNo || idx}`,
+            transactionId: c.receiptNo || `txn_${idx}`,
+            receiptNo: c.receiptNo || '',
+            accountId: c.accountNumber || '',
+            accountNumber: c.accountNumber || '',
+            customerName: c.customerName || '',
+            agentId: c.agentId || c.agentName || '',
+            agentName: c.agentName || '',
+            amount: Number(c.amount ?? 0),
+            productType:
+              c.productType === 'LOAN' || c.productType === 'SAVING' || c.productType === 'RD'
+                ? c.productType
+                : 'PIGMY',
+            paymentMode: c.paymentMode === 'UPI' || c.paymentMode === 'BANK_TRANSFER' ? c.paymentMode : 'CASH',
+            timestamp: c.timestamp ? new Date(c.timestamp).toLocaleString('en-IN') : '',
+            collectionTimestamp: c.timestamp,
+            status: 'VERIFIED',
+            syncStatus: 'SYNCED',
+          }));
+          setCollections(mappedCols);
+        }
+        const liveAgents: ManagerAgentControlItem[] = Array.isArray(payload.agents) ? payload.agents : [];
+        const liveApprovals: ManagerApprovalItem[] = Array.isArray(payload.approvals) ? payload.approvals : [];
+        setAgents(liveAgents);
+        setManagerAgents(liveAgents);
+        setManagerApprovals(liveApprovals);
+
+        return {
+          branches:
+            Array.isArray(payload.branches) && payload.branches.length > 0
+              ? payload.branches
+              : [
+                  {
+                    id: 'ALL',
+                    name: currentUser.name || 'Live CBS Branch',
+                    shortName: 'Live CBS',
+                    code: 'LIVE',
+                    eodStatus: 'OPEN',
+                    businessDate: todayDisplay,
+                  },
+                ],
+          portfolio: payload.portfolio,
+          approvals: liveApprovals,
+          agents: liveAgents,
+          overdueLoans: Array.isArray(payload.overdueLoans) ? payload.overdueLoans : [],
+          maturityItems: Array.isArray(payload.maturityItems) ? payload.maturityItems : [],
+          eodChecklist: Array.isArray(payload.eodChecklist) ? payload.eodChecklist : [],
+        };
+      }
+    } catch (cmdErr: any) {
+      if (cmdErr?.response?.status !== 404) {
+        console.warn('mobile-manager/command-center failed, falling back to legacy summary:', cmdErr?.message);
+      }
+    }
+
+    // Legacy Fallback: gracefully aggregate /api/Dashboard/summary + /api/Dashboard/mobile-admin-summary
     const [dashRes, mobRes] = await Promise.allSettled([
       apiClient.get('/api/Dashboard/summary', { params: branchParam }),
       apiClient.get('/api/Dashboard/mobile-admin-summary', { params: branchParam }),
@@ -2791,6 +2909,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     status: ManagerApprovalStatus,
     remarks?: string
   ) => {
+    if (!isDemoMode) {
+      const parts = String(id).split(':');
+      const source = parts[0];
+      const numericId = parseInt(parts[1] || '', 10);
+      if (!source || !Number.isFinite(numericId) || numericId <= 0) {
+        throw new Error('अवैध मंजुरी आयडी स्वरूप.');
+      }
+      try {
+        await apiClient.post(`/api/mobile-manager/approvals/${source}/${numericId}/decision`, {
+          status,
+          remarks: remarks || undefined,
+        });
+      } catch (err: any) {
+        const msg = err?.response?.data?.message || err?.message || 'मंजुरी निर्णय सेव्ह करताना त्रुटी आली.';
+        throw new Error(msg);
+      }
+    }
+
     setManagerApprovals((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, status, remarks: remarks || item.remarks } : item
@@ -2812,6 +2948,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const toggleManagerAgentLock = async (targetAgentId: string) => {
+    if (!isDemoMode) {
+      const rawId = parsePositiveId(targetAgentId);
+      if (!rawId) {
+        throw new Error('वैध एजंट आयडी आढळला नाही.');
+      }
+      try {
+        await apiClient.post(`/api/mobile-manager/agents/${rawId}/toggle-lock`);
+      } catch (err: any) {
+        const msg = err?.response?.data?.message || err?.message || 'एजंट लॉक बदलताना त्रुटी आली.';
+        throw new Error(msg);
+      }
+    }
+
     setManagerAgents((prev) =>
       prev.map((a) =>
         a.id === targetAgentId
@@ -2824,6 +2973,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const acceptManagerAgentRemittance = async (targetAgentId: string, amount: number) => {
     const cleanAmt = Math.max(0, Number(amount) || 0);
     if (cleanAmt <= 0) return;
+
+    if (!isDemoMode) {
+      const rawId = parsePositiveId(targetAgentId);
+      if (!rawId) {
+        throw new Error('वैध एजंट आयडी आढळला नाही.');
+      }
+      try {
+        await apiClient.post(`/api/mobile-manager/agents/${rawId}/remit-cash`, {
+          amount: cleanAmt,
+        });
+      } catch (err: any) {
+        const msg = err?.response?.data?.message || err?.message || 'रोख जमा नोंदवताना त्रुटी आली.';
+        throw new Error(msg);
+      }
+    }
+
     const target = managerAgents.find((a) => a.id === targetAgentId);
     const settled = target ? Math.min(target.cashInHand, cleanAmt) : cleanAmt;
 
@@ -2973,7 +3138,57 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     }
 
-    // Live Mode: safely pull existing /api/customer/summary + /api/customer/accounts
+    // Live Mode: call Phase 2 /api/customer/full-portal first (graceful fallback on 404)
+    try {
+      const fullRes = await apiClient.get('/api/customer/full-portal');
+      const d = fullRes.data;
+      if (d && d.summary) {
+        const liveReqs: CustomerServiceRequest[] = Array.isArray(d.serviceRequests) ? d.serviceRequests : [];
+        setCustomerServiceRequests(liveReqs);
+        return {
+          summary: d.summary,
+          accounts: d.accounts || {
+            pigmyAccounts: [],
+            savingAccounts: [],
+            rdAccounts: [],
+            fdAccounts: [],
+            loanAccounts: [],
+          },
+          shareAccount: d.shareAccount || {
+            memberNo: d.summary.cifNo || '-',
+            certificateNo: '-',
+            totalShares: 0,
+            faceValue: 100,
+            totalShareAmount: 0,
+            lastDividendPercent: 0,
+            lastDividendAmount: 0,
+            lastDividendYear: '-',
+            status: 'Active',
+          },
+          dueReminders: Array.isArray(d.dueReminders) ? d.dueReminders : [],
+          recentActivity: Array.isArray(d.recentActivity) ? d.recentActivity : [],
+          interestRates:
+            Array.isArray(d.interestRates) && d.interestRates.length > 0
+              ? d.interestRates
+              : deepClone(DEMO_CUSTOMER_INTEREST_RATES),
+          profile: d.profile || {
+            ...DEMO_CUSTOMER_PROFILE,
+            customerId: Number(d.summary.customerId ?? 0),
+            cifNo: d.summary.cifNo || '-',
+            customerName: d.summary.customerName || 'खातेदार',
+            mobileNo: d.summary.mobileNo || '-',
+            branchName: d.summary.branchName || 'मुख्य शाखा',
+          },
+          serviceRequests: liveReqs,
+        };
+      }
+    } catch (fullErr: any) {
+      if (fullErr?.response?.status !== 404) {
+        console.warn('customer/full-portal failed, falling back to legacy overview:', fullErr?.message);
+      }
+    }
+
+    // Legacy Fallback: safely pull existing /api/customer/summary + /api/customer/accounts
     const overview = await fetchCustomerPortalOverview();
     const s = overview.summary || {};
     const a = overview.accounts || {
@@ -3042,6 +3257,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     preferredSlot?: string;
     details?: { label: string; value: string }[];
   }): Promise<CustomerServiceRequest> => {
+    if (!isDemoMode) {
+      try {
+        const res = await apiClient.post('/api/customer/service-requests', {
+          type: req.type,
+          title: req.title,
+          subtitle: req.subtitle,
+          amount: req.amount,
+          preferredSlot: req.preferredSlot,
+        });
+        const created: CustomerServiceRequest = res.data;
+        setCustomerServiceRequests((prev) => [created, ...prev]);
+        return created;
+      } catch (err: any) {
+        const msg = err?.response?.data?.message || err?.message || 'सेवा विनंती पाठवताना त्रुटी आली.';
+        throw new Error(msg);
+      }
+    }
+
     const now = new Date();
     const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
     const refNo = `REQ-${now.getFullYear()}-${Math.floor(500 + Math.random() * 499)}`;
@@ -3093,24 +3326,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return newItem;
   };
 
-  const fetchCustomerLoanSchedule = async (_loanAccountId: number): Promise<CustomerLoanEmiItem[]> => {
-    return deepClone(DEMO_CUSTOMER_LOAN_SCHEDULE);
+  const fetchCustomerLoanSchedule = async (loanAccountId: number): Promise<CustomerLoanEmiItem[]> => {
+    if (isDemoMode) {
+      return deepClone(DEMO_CUSTOMER_LOAN_SCHEDULE);
+    }
+    try {
+      const res = await apiClient.get(`/api/customer/loan-schedule/${loanAccountId}`);
+      return Array.isArray(res.data) ? res.data : [];
+    } catch (err: any) {
+      console.warn('Failed to fetch live loan schedule:', err?.message);
+      return [];
+    }
   };
 
   const changeCustomerMpin = async (
     oldPin: string,
     newPin: string
   ): Promise<{ success: boolean; message: string }> => {
-    if (!newPin || newPin.trim().length < 4) {
-      throw new Error('नवीन mPIN किमान ४ अंकी असणे आवश्यक आहे.');
+    if (!newPin || !/^\d{4,6}$/.test(newPin.trim())) {
+      throw new Error('नवीन mPIN ४ ते ६ अंकी संख्या असणे आवश्यक आहे.');
     }
-    if (!isDemoMode && !oldPin.trim()) {
+    if (isDemoMode) {
+      return {
+        success: true,
+        message: 'तुमचा नवीन mPIN यशस्वीरीत्या अपडेट झाला आहे!',
+      };
+    }
+    if (!oldPin.trim()) {
       throw new Error('जुना mPIN प्रविष्ट करा.');
     }
-    return {
-      success: true,
-      message: 'तुमचा नवीन mPIN यशस्वीरीत्या अपडेट झाला आहे!',
-    };
+    try {
+      const res = await apiClient.post('/api/customer/change-mpin', {
+        oldPin: oldPin.trim(),
+        newPin: newPin.trim(),
+      });
+      return {
+        success: Boolean(res.data?.success ?? true),
+        message: res.data?.message || 'तुमचा नवीन mPIN यशस्वीरीत्या अपडेट झाला आहे!',
+      };
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || err?.message || 'mPIN बदलताना त्रुटी आली.';
+      throw new Error(msg);
+    }
   };
 
   // Save today's collection history to local storage so they remain in "Collected" tab even after sync

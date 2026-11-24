@@ -31,7 +31,7 @@ import { triggerLightHaptic, triggerSuccessHaptic, triggerErrorHaptic } from '..
 import { useCustomerDashboard } from '../CustomerDashboardContext';
 
 export const CustomerServicesTab: React.FC = () => {
-  const { submitCustomerServiceRequest } = useAuth();
+  const { isDemoMode, submitCustomerServiceRequest } = useAuth();
   const { colors } = useThemeColors();
   const { showToast } = useToast();
   const {
@@ -151,6 +151,12 @@ export const CustomerServicesTab: React.FC = () => {
         'विनंती नोंदवली'
       );
       setActiveType(null);
+      if (!isDemoMode) {
+        await reloadData();
+      }
+    } catch (err: any) {
+      triggerErrorHaptic();
+      showToast(err?.message || 'विनंती पाठवताना त्रुटी आली.', 'error', 'सर्व्हर त्रुटी');
     } finally {
       setSubmitting(false);
     }
