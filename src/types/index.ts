@@ -437,3 +437,155 @@ export interface ManagerCommandPayload {
   eodChecklist: ManagerEodChecklistItem[];
 }
 
+// ==========================================
+// Customer (Khatedar) Digital Banking Models
+// ==========================================
+export interface CustomerPortalAccountItem {
+  accountId: number;
+  productType: 'PIGMY' | 'SAVING' | 'RD' | 'FD' | 'LOAN';
+  accountNo: string;
+  oldAccountNo?: string;
+  schemeName: string;
+  balance: number;
+  status: string;
+  maturityDate?: string | null;
+  maturityAmount?: number;
+  interestRate?: number;
+  targetAmount?: number;
+  startDate?: string;
+  receiptNo?: string;
+  nomineeName?: string;
+  autoRenew?: boolean;
+  paidInstallments?: number;
+  totalInstallments?: number;
+  sanctionedAmount?: number;
+  nextEmiDate?: string;
+  agentName?: string;
+}
+
+export interface CustomerDueReminder {
+  id: string;
+  productType: 'LOAN' | 'RD' | 'PIGMY';
+  title: string;
+  accountNo: string;
+  dueDate: string;
+  amount: number;
+  daysLeft: number;
+  status: 'DUE_SOON' | 'OVERDUE';
+}
+
+export interface CustomerShareAccount {
+  memberNo: string;
+  certificateNo: string;
+  totalShares: number;
+  faceValue: number;
+  totalShareAmount: number;
+  lastDividendPercent: number;
+  lastDividendAmount: number;
+  lastDividendYear: string;
+  status: string;
+}
+
+export interface CustomerLoanEmiItem {
+  installmentNo: number;
+  dueDate: string;
+  emiAmount: number;
+  principalPart: number;
+  interestPart: number;
+  remainingBalance: number;
+  status: 'PAID' | 'UPCOMING' | 'DUE';
+}
+
+export interface CustomerRecentActivityItem {
+  id: string;
+  accountId: number;
+  productType: 'PIGMY' | 'SAVING' | 'RD' | 'FD' | 'LOAN';
+  accountNo: string;
+  date: string;
+  narration: string;
+  reference: string;
+  crAmount: number;
+  drAmount: number;
+  balance: number;
+}
+
+export type CustomerServiceRequestType =
+  | 'DOORSTEP_PICKUP'
+  | 'LOAN_APPLY'
+  | 'DEPOSIT_OPEN'
+  | 'CERTIFICATE'
+  | 'SUPPORT_TICKET';
+
+export type CustomerServiceRequestStatus = 'PENDING' | 'APPROVED' | 'COMPLETED' | 'REJECTED';
+
+export interface CustomerServiceRequest {
+  id: string;
+  referenceNo: string;
+  type: CustomerServiceRequestType;
+  title: string;
+  subtitle: string;
+  amount?: number;
+  preferredSlot?: string;
+  createdAt: string;
+  status: CustomerServiceRequestStatus;
+  linkedApprovalId?: string;
+}
+
+export interface CustomerInterestRateItem {
+  id: string;
+  category: 'FD' | 'RD' | 'PIGMY' | 'LOAN';
+  tenureOrScheme: string;
+  generalRate: string;
+  seniorRate?: string;
+  minAmount: string;
+}
+
+export interface CustomerProfileInfo {
+  customerId: number;
+  cifNo: string;
+  memberNo: string;
+  customerName: string;
+  mobileNo: string;
+  email: string;
+  address: string;
+  branchName: string;
+  branchPhone: string;
+  branchAddress: string;
+  branchTimings: string;
+  kycVerified: boolean;
+  maskedAadhaar: string;
+  maskedPan: string;
+  nomineeName: string;
+  nomineeRelation: string;
+  assignedAgentName: string;
+  assignedAgentPhone: string;
+}
+
+export interface CustomerFullPortalPayload {
+  summary: {
+    customerId: number;
+    cifNo: string;
+    customerName: string;
+    mobileNo: string;
+    branchName: string;
+    totalSavingsAndDeposits: number;
+    totalLoanOutstanding: number;
+    totalShareAmount: number;
+    counts: { pigmy: number; saving: number; rd: number; fd: number; loan: number };
+  };
+  accounts: {
+    pigmyAccounts: CustomerPortalAccountItem[];
+    savingAccounts: CustomerPortalAccountItem[];
+    rdAccounts: CustomerPortalAccountItem[];
+    fdAccounts: CustomerPortalAccountItem[];
+    loanAccounts: CustomerPortalAccountItem[];
+  };
+  shareAccount: CustomerShareAccount;
+  dueReminders: CustomerDueReminder[];
+  recentActivity: CustomerRecentActivityItem[];
+  interestRates: CustomerInterestRateItem[];
+  profile: CustomerProfileInfo;
+  serviceRequests: CustomerServiceRequest[];
+}
+
+

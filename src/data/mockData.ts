@@ -12,19 +12,16 @@ import {
   ManagerAgentControlItem,
   OverdueLoanItem,
   MaturityAccountItem,
+  CustomerPortalAccountItem,
+  CustomerShareAccount,
+  CustomerDueReminder,
+  CustomerLoanEmiItem,
+  CustomerInterestRateItem,
+  CustomerProfileInfo,
+  CustomerServiceRequest,
 } from '../types';
 
-export interface DemoCustomerPortalAccount {
-  accountId: number;
-  productType: 'PIGMY' | 'SAVING' | 'RD' | 'FD' | 'LOAN';
-  accountNo: string;
-  oldAccountNo?: string;
-  schemeName: string;
-  balance: number;
-  status: string;
-  maturityDate?: string;
-  interestRate?: number;
-}
+export type DemoCustomerPortalAccount = CustomerPortalAccountItem;
 
 export interface DemoCustomerPassbookTx {
   id: number;
@@ -556,6 +553,8 @@ export const DEMO_CUSTOMER_PORTAL_DATA: {
         oldAccountNo: '20099',
         schemeName: 'दैनंदिन पिग्मी योजना',
         balance: 42500,
+        targetAmount: 500,
+        agentName: 'राजेश कुमार कांबळे',
         status: 'Active',
         maturityDate: '05/01/2027',
         interestRate: 7.5,
@@ -579,6 +578,10 @@ export const DEMO_CUSTOMER_PORTAL_DATA: {
         accountNo: '00130300000301',
         schemeName: 'मासिक आवर्ती ठेव (RD)',
         balance: 36000,
+        targetAmount: 2000,
+        paidInstallments: 18,
+        totalInstallments: 36,
+        maturityAmount: 82400,
         status: 'Active',
         maturityDate: '31/12/2027',
         interestRate: 8.5,
@@ -589,8 +592,13 @@ export const DEMO_CUSTOMER_PORTAL_DATA: {
         accountId: 401,
         productType: 'FD',
         accountNo: '00130400000401',
+        receiptNo: 'FDR-2025-0401',
         schemeName: 'दामदुप्पट मुदत ठेव (FD)',
         balance: 150000,
+        maturityAmount: 184500,
+        startDate: '15/06/2025',
+        nomineeName: 'सौ. स्वाती तुषार शिंदे (पत्नी)',
+        autoRenew: true,
         status: 'Active',
         maturityDate: '15/06/2028',
         interestRate: 9.25,
@@ -603,6 +611,11 @@ export const DEMO_CUSTOMER_PORTAL_DATA: {
         accountNo: '00130500000501',
         schemeName: 'व्यापारी सुवर्ण कर्ज',
         balance: 85000,
+        sanctionedAmount: 150000,
+        targetAmount: 3500,
+        paidInstallments: 18,
+        totalInstallments: 48,
+        nextEmiDate: '05/12/2026',
         status: 'Active',
         interestRate: 13.5,
       },
@@ -1310,6 +1323,107 @@ export const DEMO_MATURITY_ITEMS: MaturityAccountItem[] = [
     interestRate: 9.0,
     bucket: 'MATURED_UNCLOSED',
     branchId: 3,
+  },
+];
+
+// ==========================================
+// Customer (Khatedar) Digital Banking Demo Dataset
+// ==========================================
+export const DEMO_CUSTOMER_SHARE_ACCOUNT: CustomerShareAccount = {
+  memberNo: 'MEM-1042',
+  certificateNo: 'SHC-2021-1042',
+  totalShares: 150,
+  faceValue: 100,
+  totalShareAmount: 15000,
+  lastDividendPercent: 12,
+  lastDividendAmount: 1800,
+  lastDividendYear: 'FY 2025-26',
+  status: 'Active',
+};
+
+export const DEMO_CUSTOMER_DUE_REMINDERS: CustomerDueReminder[] = [
+  {
+    id: 'due_loan_501',
+    productType: 'LOAN',
+    title: 'व्यापारी सुवर्ण कर्ज हप्ता (EMI)',
+    accountNo: '00130500000501',
+    dueDate: '05/12/2026',
+    amount: 3500,
+    daysLeft: 11,
+    status: 'DUE_SOON',
+  },
+  {
+    id: 'due_rd_301',
+    productType: 'RD',
+    title: 'मासिक आवर्ती ठेव हप्ता (RD #19)',
+    accountNo: '00130300000301',
+    dueDate: '30/11/2026',
+    amount: 2000,
+    daysLeft: 6,
+    status: 'DUE_SOON',
+  },
+];
+
+export const DEMO_CUSTOMER_LOAN_SCHEDULE: CustomerLoanEmiItem[] = [
+  { installmentNo: 19, dueDate: '05/12/2026', emiAmount: 3500, principalPart: 2544, interestPart: 956, remainingBalance: 82456, status: 'DUE' },
+  { installmentNo: 20, dueDate: '05/01/2027', emiAmount: 3500, principalPart: 2572, interestPart: 928, remainingBalance: 79884, status: 'UPCOMING' },
+  { installmentNo: 21, dueDate: '05/02/2027', emiAmount: 3500, principalPart: 2601, interestPart: 899, remainingBalance: 77283, status: 'UPCOMING' },
+  { installmentNo: 22, dueDate: '05/03/2027', emiAmount: 3500, principalPart: 2631, interestPart: 869, remainingBalance: 74652, status: 'UPCOMING' },
+  { installmentNo: 23, dueDate: '05/04/2027', emiAmount: 3500, principalPart: 2660, interestPart: 840, remainingBalance: 71992, status: 'UPCOMING' },
+  { installmentNo: 24, dueDate: '05/05/2027', emiAmount: 3500, principalPart: 2690, interestPart: 810, remainingBalance: 69302, status: 'UPCOMING' },
+];
+
+export const DEMO_CUSTOMER_INTEREST_RATES: CustomerInterestRateItem[] = [
+  { id: 'r_fd_1', category: 'FD', tenureOrScheme: 'मुदत ठेव (६ ते ११ महिने)', generalRate: '7.50%', seniorRate: '8.00%', minAmount: '₹5,000' },
+  { id: 'r_fd_2', category: 'FD', tenureOrScheme: 'मुदत ठेव (१ ते २ वर्षे)', generalRate: '8.75%', seniorRate: '9.25%', minAmount: '₹10,000' },
+  { id: 'r_fd_3', category: 'FD', tenureOrScheme: 'दामदुप्पट / ३ वर्षे FD', generalRate: '9.25%', seniorRate: '9.75%', minAmount: '₹25,000' },
+  { id: 'r_rd_1', category: 'RD', tenureOrScheme: 'मासिक आवर्ती ठेव (१२–३६ महिने)', generalRate: '8.50%', seniorRate: '9.00%', minAmount: '₹500 / महिना' },
+  { id: 'r_pg_1', category: 'PIGMY', tenureOrScheme: 'दैनंदिन पिग्मी ठेव (१२–२४ महिने)', generalRate: '7.50%', seniorRate: '8.00%', minAmount: '₹50 / दिवस' },
+  { id: 'r_ln_1', category: 'LOAN', tenureOrScheme: 'सुवर्ण तारण कर्ज (Gold Loan)', generalRate: '10.50%', minAmount: '₹10,000' },
+  { id: 'r_ln_2', category: 'LOAN', tenureOrScheme: 'वाहन कर्ज (Vehicle Loan)', generalRate: '12.50%', minAmount: '₹50,000' },
+  { id: 'r_ln_3', category: 'LOAN', tenureOrScheme: 'व्यापारी व्यवसाय कर्ज', generalRate: '13.50%', minAmount: '₹25,000' },
+  { id: 'r_ln_4', category: 'LOAN', tenureOrScheme: 'वैयक्तिक तारण कर्ज', generalRate: '14.00%', minAmount: '₹20,000' },
+];
+
+export const DEMO_CUSTOMER_PROFILE: CustomerProfileInfo = {
+  customerId: 101,
+  cifNo: 'CIF0001',
+  memberNo: 'MEM-1042',
+  customerName: 'तुषार रघुनाथ शिंदे',
+  mobileNo: '9975446204',
+  email: 'tushar.shinde@smartbanking.in',
+  address: 'गल्ली क्र. ५, राजारामपुरी, कोल्हापूर - ४१६००८',
+  branchName: 'मुख्य शाखा, कोल्हापूर',
+  branchPhone: '02312524400',
+  branchAddress: 'शाहूपुरी मुख्य रोड, कोल्हापूर - ४१६००१',
+  branchTimings: 'सोम–शनि • सकाळी १०:०० ते सायं. ५:००',
+  kycVerified: true,
+  maskedAadhaar: 'XXXX-XXXX-4821',
+  maskedPan: 'ABCP****7K',
+  nomineeName: 'सौ. स्वाती तुषार शिंदे',
+  nomineeRelation: 'पत्नी (Spouse)',
+  assignedAgentName: 'राजेश कुमार कांबळे',
+  assignedAgentPhone: '9822011223',
+};
+
+export const DEMO_CUSTOMER_SERVICE_REQUESTS: CustomerServiceRequest[] = [
+  {
+    id: 'creq_1',
+    referenceNo: 'REQ-2026-401',
+    type: 'CERTIFICATE',
+    title: 'वार्षिक व्याज प्रमाणपत्र (FY 2025-26)',
+    subtitle: 'FD व बचत खात्यांचे एकत्रित व्याज प्रमाणपत्र',
+    createdAt: '१८/११/२०२६',
+    status: 'COMPLETED',
+  },
+  {
+    id: 'creq_2',
+    referenceNo: 'REQ-2026-418',
+    type: 'CERTIFICATE',
+    title: 'नवीन पासबुक प्रिंट विनंती',
+    subtitle: 'दैनिक ठेव खाते क्र. 00130100000616',
+    createdAt: '२२/११/२०२६',
+    status: 'PENDING',
   },
 ];
 

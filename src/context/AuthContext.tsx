@@ -9,7 +9,9 @@ import {
   PassbookTransaction, CollectionReportItem, PigmyScheme, DropdownOptions, AgentCustomerRequest,
   AgentCustomer, ProductType, CustomerDoorstepProfile,
   ManagerBranchId, ManagerCommandPayload, ManagerApprovalItem, ManagerApprovalStatus,
-  ManagerAgentControlItem, ManagerEodChecklistItem
+  ManagerAgentControlItem, ManagerEodChecklistItem,
+  CustomerFullPortalPayload, CustomerServiceRequest, CustomerServiceRequestType,
+  CustomerLoanEmiItem, CustomerRecentActivityItem
 } from '../types';
 import { apiClient, setInMemoryAuthToken, registerUnauthorizedHandler } from '../config';
 import {
@@ -27,6 +29,12 @@ import {
   DEMO_MANAGER_AGENTS,
   DEMO_OVERDUE_LOANS,
   DEMO_MATURITY_ITEMS,
+  DEMO_CUSTOMER_SHARE_ACCOUNT,
+  DEMO_CUSTOMER_DUE_REMINDERS,
+  DEMO_CUSTOMER_LOAN_SCHEDULE,
+  DEMO_CUSTOMER_INTEREST_RATES,
+  DEMO_CUSTOMER_PROFILE,
+  DEMO_CUSTOMER_SERVICE_REQUESTS,
   buildInitialDemoCollections,
   DemoCustomerPassbook,
 } from '../data/mockData';
@@ -54,10 +62,22 @@ interface AuthContextType {
   agentCustomers: AgentCustomer[];
   managerApprovals: ManagerApprovalItem[];
   managerAgents: ManagerAgentControlItem[];
+  customerServiceRequests: CustomerServiceRequest[];
   fetchManagerCommandData: (branchId?: ManagerBranchId) => Promise<ManagerCommandPayload>;
   updateManagerApproval: (id: string, status: ManagerApprovalStatus, remarks?: string) => Promise<void>;
   toggleManagerAgentLock: (agentId: string) => Promise<void>;
   acceptManagerAgentRemittance: (agentId: string, amount: number) => Promise<void>;
+  fetchCustomerFullPortal: () => Promise<CustomerFullPortalPayload>;
+  submitCustomerServiceRequest: (req: {
+    type: CustomerServiceRequestType;
+    title: string;
+    subtitle: string;
+    amount?: number;
+    preferredSlot?: string;
+    details?: { label: string; value: string }[];
+  }) => Promise<CustomerServiceRequest>;
+  fetchCustomerLoanSchedule: (loanAccountId: number) => Promise<CustomerLoanEmiItem[]>;
+  changeCustomerMpin: (oldPin: string, newPin: string) => Promise<{ success: boolean; message: string }>;
   fetchAgentProfile: (agentId: string | number) => Promise<any>;
   fetchAgentAccounts: (agentId: string | number) => Promise<PigmiAccount[]>;
   fetchAgentCustomers: (agentId: string | number) => Promise<AgentCustomer[]>;
@@ -191,6 +211,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     deepClone(DEMO_MANAGER_AGENTS)
   );
   const [managerRemittedCashByBranch, setManagerRemittedCashByBranch] = useState<Record<number, number>>({});
+  const [customerServiceRequests, setCustomerServiceRequests] = useState<CustomerServiceRequest[]>(() =>
+    deepClone(DEMO_CUSTOMER_SERVICE_REQUESTS)
+  );
 
   const ensureDemoStoreInitialized = (forceReset = false) => {
     if (demoInitializedRef.current && !forceReset) return;
@@ -205,6 +228,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setManagerApprovals(deepClone(DEMO_MANAGER_APPROVALS));
     setManagerAgents(deepClone(DEMO_MANAGER_AGENTS));
     setManagerRemittedCashByBranch({});
+    setCustomerServiceRequests(deepClone(DEMO_CUSTOMER_SERVICE_REQUESTS));
     setServerLockStatus(null);
     setServerDashboardSummary(null);
   };
@@ -839,6 +863,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setManagerApprovals(deepClone(DEMO_MANAGER_APPROVALS));
     setManagerAgents(deepClone(DEMO_MANAGER_AGENTS));
     setManagerRemittedCashByBranch({});
+    setCustomerServiceRequests(deepClone(DEMO_CUSTOMER_SERVICE_REQUESTS));
     setServerDashboardSummary(null);
     setServerLockStatus(null);
     setCurrentUser(EMPTY_USER);
@@ -1343,8 +1368,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (match) {
           if (productType === 'LOAN') {
             match.balance = Math.max(0, match.balance - principalPart);
+            if (match.paidInstallments !== undefined) {
+              match.paidInstallments += 1;
+            }
           } else {
             match.balance += amount;
+            if (productType === 'RD' && match.paidInstallments !== undefined) {
+              match.paidInstallments += 1;
+            }
           }
         }
         return next;
@@ -2765,6 +2796,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         item.id === id ? { ...item, status, remarks: remarks || item.remarks } : item
       )
     );
+    // Sync decision back to Customer Service Request Tracker if linked
+    setCustomerServiceRequests((prev) =>
+      prev.map((req) => {
+        if (req.linkedApprovalId !== id) return req;
+        const mappedStatus =
+          status === 'APPROVED'
+            ? 'APPROVED'
+            : status === 'REJECTED'
+            ? 'REJECTED'
+            : 'PENDING';
+        return { ...req, status: mappedStatus };
+      })
+    );
   };
 
   const toggleManagerAgentLock = async (targetAgentId: string) => {
@@ -2859,6 +2903,216 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return res.data;
   };
 
+  const fetchCustomerFullPortal = async (): Promise<CustomerFullPortalPayload> => {
+    if (isDemoMode) {
+      const { pigmyAccounts, savingAccounts, rdAccounts, fdAccounts, loanAccounts } = demoPortalAccounts;
+      const totalSavingsAndDeposits = [
+        ...pigmyAccounts,
+        ...savingAccounts,
+        ...rdAccounts,
+        ...fdAccounts,
+      ].reduce((sum, a) => sum + Number(a.balance || 0), 0);
+      const totalLoanOutstanding = loanAccounts.reduce((sum, a) => sum + Number(a.balance || 0), 0);
+
+      // Build unified recent activity across all customer passbooks
+      const allAccountsFlat = [
+        ...pigmyAccounts,
+        ...savingAccounts,
+        ...rdAccounts,
+        ...fdAccounts,
+        ...loanAccounts,
+      ];
+      const recentActivity: CustomerRecentActivityItem[] = [];
+      for (const acc of allAccountsFlat) {
+        const key = `${acc.productType}_${acc.accountId}`;
+        const pb = demoPassbooks[key];
+        if (!pb) continue;
+        pb.transactions.slice(0, 3).forEach((tx) => {
+          recentActivity.push({
+            id: `${key}_${tx.id}`,
+            accountId: acc.accountId,
+            productType: acc.productType,
+            accountNo: acc.accountNo,
+            date: tx.date,
+            narration: tx.narration,
+            reference: tx.reference,
+            crAmount: tx.crAmount,
+            drAmount: tx.drAmount,
+            balance: tx.balance,
+          });
+        });
+      }
+      // Put freshest (highest numeric timestamp IDs or 'आज') first
+      recentActivity.sort((a, b) => {
+        const aToday = a.date.includes('आज') || a.date.includes('/') ? 1 : 0;
+        const bToday = b.date.includes('आज') || b.date.includes('/') ? 1 : 0;
+        return bToday - aToday;
+      });
+
+      return {
+        summary: {
+          ...DEMO_CUSTOMER_PORTAL_DATA.customerInfo,
+          totalSavingsAndDeposits,
+          totalLoanOutstanding,
+          totalShareAmount: DEMO_CUSTOMER_SHARE_ACCOUNT.totalShareAmount,
+          counts: {
+            pigmy: pigmyAccounts.length,
+            saving: savingAccounts.length,
+            rd: rdAccounts.length,
+            fd: fdAccounts.length,
+            loan: loanAccounts.length,
+          },
+        },
+        accounts: deepClone(demoPortalAccounts),
+        shareAccount: deepClone(DEMO_CUSTOMER_SHARE_ACCOUNT),
+        dueReminders: deepClone(DEMO_CUSTOMER_DUE_REMINDERS),
+        recentActivity: recentActivity.slice(0, 8),
+        interestRates: deepClone(DEMO_CUSTOMER_INTEREST_RATES),
+        profile: deepClone(DEMO_CUSTOMER_PROFILE),
+        serviceRequests: deepClone(customerServiceRequests),
+      };
+    }
+
+    // Live Mode: safely pull existing /api/customer/summary + /api/customer/accounts
+    const overview = await fetchCustomerPortalOverview();
+    const s = overview.summary || {};
+    const a = overview.accounts || {
+      pigmyAccounts: [],
+      savingAccounts: [],
+      rdAccounts: [],
+      fdAccounts: [],
+      loanAccounts: [],
+    };
+    return {
+      summary: {
+        customerId: Number(s.customerId ?? 0),
+        cifNo: s.cifNo || currentUser.accountNumber || '',
+        customerName: s.customerName || currentUser.name || 'खातेदार',
+        mobileNo: s.mobileNo || currentUser.phone || '',
+        branchName: s.branchName || 'Main Branch',
+        totalSavingsAndDeposits: Number(s.totalSavingsAndDeposits ?? 0),
+        totalLoanOutstanding: Number(s.totalLoanOutstanding ?? 0),
+        totalShareAmount: 0,
+        counts: s.counts || {
+          pigmy: a.pigmyAccounts?.length || 0,
+          saving: a.savingAccounts?.length || 0,
+          rd: a.rdAccounts?.length || 0,
+          fd: a.fdAccounts?.length || 0,
+          loan: a.loanAccounts?.length || 0,
+        },
+      },
+      accounts: {
+        pigmyAccounts: a.pigmyAccounts || [],
+        savingAccounts: a.savingAccounts || [],
+        rdAccounts: a.rdAccounts || [],
+        fdAccounts: a.fdAccounts || [],
+        loanAccounts: a.loanAccounts || [],
+      },
+      shareAccount: {
+        memberNo: s.cifNo || '-',
+        certificateNo: '-',
+        totalShares: 0,
+        faceValue: 100,
+        totalShareAmount: 0,
+        lastDividendPercent: 0,
+        lastDividendAmount: 0,
+        lastDividendYear: '-',
+        status: 'Active',
+      },
+      dueReminders: [],
+      recentActivity: [],
+      interestRates: deepClone(DEMO_CUSTOMER_INTEREST_RATES),
+      profile: {
+        ...DEMO_CUSTOMER_PROFILE,
+        customerId: Number(s.customerId ?? 0),
+        cifNo: s.cifNo || currentUser.accountNumber || '-',
+        customerName: s.customerName || currentUser.name || 'खातेदार',
+        mobileNo: s.mobileNo || currentUser.phone || '-',
+        branchName: s.branchName || 'Main Branch',
+      },
+      serviceRequests: deepClone(customerServiceRequests),
+    };
+  };
+
+  const submitCustomerServiceRequest = async (req: {
+    type: CustomerServiceRequestType;
+    title: string;
+    subtitle: string;
+    amount?: number;
+    preferredSlot?: string;
+    details?: { label: string; value: string }[];
+  }): Promise<CustomerServiceRequest> => {
+    const now = new Date();
+    const dateStr = `${String(now.getDate()).padStart(2, '0')}/${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+    const refNo = `REQ-${now.getFullYear()}-${Math.floor(500 + Math.random() * 499)}`;
+    const approvalId =
+      req.type === 'LOAN_APPLY' || req.type === 'DEPOSIT_OPEN'
+        ? `apr_cust_${Date.now()}`
+        : undefined;
+
+    const newItem: CustomerServiceRequest = {
+      id: `creq_${Date.now()}`,
+      referenceNo: refNo,
+      type: req.type,
+      title: req.title,
+      subtitle: req.subtitle,
+      amount: req.amount,
+      preferredSlot: req.preferredSlot,
+      createdAt: `आज (${dateStr})`,
+      status: 'PENDING',
+      linkedApprovalId: approvalId,
+    };
+
+    setCustomerServiceRequests((prev) => [newItem, ...prev]);
+
+    // Cross-Portal Demo Sync: Loan & Deposit requests appear directly in Manager's Approvals tab!
+    if (isDemoMode && approvalId) {
+      setManagerApprovals((prev) => [
+        {
+          id: approvalId,
+          category: req.type === 'LOAN_APPLY' ? 'LOAN_APP' : 'CUSTOMER_KYC',
+          title: `${currentUser.name || DEMO_CUSTOMER_PROFILE.customerName} — ${req.title}`,
+          subtitle: `${req.subtitle} (खातेदार अ‍ॅपवरून अर्ज)`,
+          amount: Number(req.amount || 0),
+          requestedBy: `${currentUser.name || DEMO_CUSTOMER_PROFILE.customerName} (खातेदार)`,
+          requestedAt: 'आत्ताच',
+          branchId: 1,
+          branchName: DEMO_CUSTOMER_PROFILE.branchName,
+          status: 'PENDING',
+          details: req.details || [
+            { label: 'संदर्भ क्र.', value: refNo },
+            { label: 'CIF क्रमांक', value: currentUser.accountNumber || DEMO_CUSTOMER_PROFILE.cifNo },
+            { label: 'मोबाईल क्र.', value: currentUser.phone || DEMO_CUSTOMER_PROFILE.mobileNo },
+            { label: 'रक्कम', value: req.amount ? `₹${req.amount.toLocaleString('en-IN')}` : '-' },
+          ],
+        },
+        ...prev,
+      ]);
+    }
+
+    return newItem;
+  };
+
+  const fetchCustomerLoanSchedule = async (_loanAccountId: number): Promise<CustomerLoanEmiItem[]> => {
+    return deepClone(DEMO_CUSTOMER_LOAN_SCHEDULE);
+  };
+
+  const changeCustomerMpin = async (
+    oldPin: string,
+    newPin: string
+  ): Promise<{ success: boolean; message: string }> => {
+    if (!newPin || newPin.trim().length < 4) {
+      throw new Error('नवीन mPIN किमान ४ अंकी असणे आवश्यक आहे.');
+    }
+    if (!isDemoMode && !oldPin.trim()) {
+      throw new Error('जुना mPIN प्रविष्ट करा.');
+    }
+    return {
+      success: true,
+      message: 'तुमचा नवीन mPIN यशस्वीरीत्या अपडेट झाला आहे!',
+    };
+  };
+
   // Save today's collection history to local storage so they remain in "Collected" tab even after sync
   useEffect(() => {
     if (!isAuthenticated || currentRole !== 'AGENT' || isDemoMode || collections.length === 0) return;
@@ -2918,10 +3172,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         agentCustomers,
         managerApprovals,
         managerAgents,
+        customerServiceRequests,
         fetchManagerCommandData,
         updateManagerApproval,
         toggleManagerAgentLock,
         acceptManagerAgentRemittance,
+        fetchCustomerFullPortal,
+        submitCustomerServiceRequest,
+        fetchCustomerLoanSchedule,
+        changeCustomerMpin,
         fetchAgentProfile,
         fetchAgentAccounts,
         fetchAgentCustomers,
