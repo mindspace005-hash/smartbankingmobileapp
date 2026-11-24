@@ -24,6 +24,11 @@ import {
   ShieldCheck,
   Smartphone,
   KeyRound,
+  Sparkles,
+  Server,
+  Briefcase,
+  UserCheck,
+  Users,
 } from 'lucide-react-native';
 import { UserRole } from '../types';
 import { useThemeColors } from '../context/ThemeContext';
@@ -31,15 +36,16 @@ import { useAuth } from '../context/AuthContext';
 import { CONFIG } from '../config';
 import { NetworkIndicator } from '../components/NetworkIndicator';
 import { RADIUS } from '../theme/tokens';
-import { triggerErrorHaptic, triggerLightHaptic } from '../utils/haptics';
+import { triggerErrorHaptic, triggerLightHaptic, triggerSuccessHaptic } from '../utils/haptics';
 
 interface LoginScreenProps {
   onLogin: (username?: string, password?: string, role?: UserRole, credential?: any) => Promise<void>;
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
-  const { activateCustomerTempPin } = useAuth();
-  const [loginMode, setLoginMode] = useState<'STAFF_AGENT' | 'CUSTOMER'>('STAFF_AGENT');
+  const { activateCustomerTempPin, loginDemo } = useAuth();
+  const [connectionMode, setConnectionMode] = useState<'DEMO' | 'LIVE'>('DEMO');
+  const [selectedPortal, setSelectedPortal] = useState<UserRole>('AGENT');
   const [customerSetupMode, setCustomerSetupMode] = useState(false);
 
   const [username, setUsername] = useState('');
@@ -52,6 +58,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [error, setError] = useState('');
 
   const { colors, language, t, toggleTheme, toggleLanguage } = useThemeColors();
+
+  const isDemo = connectionMode === 'DEMO';
+
+  const portalLabel =
+    selectedPortal === 'AGENT'
+      ? 'पिग्मी एजंट'
+      : selectedPortal === 'ADMIN'
+      ? 'मॅनेजर'
+      : 'खातेदार';
 
   const extractApiError = (err: any) => {
     const status = err?.response?.status;
@@ -73,9 +88,28 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
     return err?.message || 'लॉगिन अयशस्वी झाले. कृपया माहिती तपासा.';
   };
 
+  const handleQuickDemo = async (role: UserRole) => {
+    setError('');
+    triggerSuccessHaptic();
+    setLoading(true);
+    try {
+      await loginDemo(role, username.trim());
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleLogin = async () => {
     setError('');
-    if (loginMode === 'CUSTOMER' && customerSetupMode) {
+
+    // Demo Mode: zero strict validation — any credentials (or direct tap) opens selected portal smoothly
+    if (isDemo) {
+      await handleQuickDemo(selectedPortal);
+      return;
+    }
+
+    // Live Server Mode: preserve full CBS authentication
+    if (selectedPortal === 'CUSTOMER' && customerSetupMode) {
       if (!username.trim() || !cifNo.trim() || password.trim().length < 4) {
         triggerErrorHaptic();
         setError('मोबाईल क्र., CIF क्रमांक आणि किमान ४ अंकी नवीन mPIN आवश्यक आहे.');
@@ -103,7 +137,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
     triggerLightHaptic();
     setLoading(true);
     try {
-      await onLogin(username.trim(), password, loginMode === 'CUSTOMER' ? 'CUSTOMER' : undefined);
+      await onLogin(username.trim(), password, selectedPortal === 'CUSTOMER' ? 'CUSTOMER' : undefined);
     } catch (err: any) {
       triggerErrorHaptic();
       setError(extractApiError(err));
@@ -111,6 +145,30 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       setLoading(false);
     }
   };
+
+  const portalTabs: { key: UserRole; label: string }[] = [
+    { key: 'AGENT', label: 'पिग्मी एजंट' },
+    { key: 'ADMIN', label: 'मॅनेजर' },
+    { key: 'CUSTOMER', label: 'खातेदार' },
+  ];
+
+  const usernamePlaceholder = isDemo
+    ? selectedPortal === 'AGENT'
+      ? 'युजरनेम (उदा. agent — ऐच्छिक)'
+      : selectedPortal === 'ADMIN'
+      ? 'युजरनेम (उदा. manager — ऐच्छिक)'
+      : 'मोबाईल / CIF (उदा. CIF0001 — ऐच्छिक)'
+    : selectedPortal === 'CUSTOMER'
+    ? 'नोंदणीकृत मोबाईल क्र. किंवा CIF'
+    : t.usernamePlaceholder;
+
+  const passwordPlaceholder = isDemo
+    ? 'पासवर्ड / mPIN (डेमोसाठी ऐच्छिक)'
+    : selectedPortal === 'CUSTOMER'
+    ? customerSetupMode
+      ? 'नवीन ४–६ अंकी mPIN सेट करा'
+      : 'mPIN (किंवा पहिली वेळ असल्यास CIF क्र.)'
+    : t.passwordPlaceholder;
 
   return (
     <KeyboardAvoidingView
@@ -134,6 +192,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           <View style={styles.topUtilityRow}>
             <NetworkIndicator />
             <View style={styles.utilityBtns}>
+              <TouchableOpacity
+                style={[
+                  styles.utilityBtn,
+                  isDemo && { backgroundColor: 'rgba(251, 191, 36, 0.28)', borderColor: '#FDE68A' },
+                ]}
+                onPress={() => {
+                  triggerLightHaptic();
+                  setConnectionMode((prev) => (prev === 'DEMO' ? 'LIVE' : 'DEMO'));
+                  setCustomerSetupMode(false);
+                  setError('');
+                }}
+                activeOpacity={0.75}
+              >
+                {isDemo ? <Sparkles size={13} color="#FDE68A" /> : <Server size={13} color="#FFFFFF" />}
+                <Text style={[styles.utilityBtnText, isDemo && { color: '#FEF3C7' }]}>
+                  {isDemo ? 'DEMO' : 'LIVE'}
+                </Text>
+              </TouchableOpacity>
+
               <TouchableOpacity
                 style={styles.utilityBtn}
                 onPress={() => {
@@ -179,49 +256,56 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
               },
             ]}
           >
-            {/* Unified Role Switcher: Agent/Manager vs Khatedar */}
+            {/* Unified 3-Portal Role Switcher */}
             <View style={[styles.roleSwitch, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
-              <TouchableOpacity
-                style={[styles.roleTab, loginMode === 'STAFF_AGENT' && { backgroundColor: colors.primaryDark }]}
-                onPress={() => {
-                  triggerLightHaptic();
-                  setLoginMode('STAFF_AGENT');
-                  setCustomerSetupMode(false);
-                  setError('');
-                }}
-              >
-                <Text style={[styles.roleTabText, { color: loginMode === 'STAFF_AGENT' ? '#FFFFFF' : colors.textSecondary }]}>
-                  एजंट / मॅनेजर
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.roleTab, loginMode === 'CUSTOMER' && { backgroundColor: colors.primaryDark }]}
-                onPress={() => {
-                  triggerLightHaptic();
-                  setLoginMode('CUSTOMER');
-                  setError('');
-                }}
-              >
-                <Text style={[styles.roleTabText, { color: loginMode === 'CUSTOMER' ? '#FFFFFF' : colors.textSecondary }]}>
-                  खातेदार (Customer)
-                </Text>
-              </TouchableOpacity>
+              {portalTabs.map((tab) => {
+                const active = selectedPortal === tab.key;
+                return (
+                  <TouchableOpacity
+                    key={tab.key}
+                    style={[styles.roleTab, active && { backgroundColor: colors.primaryDark }]}
+                    onPress={() => {
+                      triggerLightHaptic();
+                      setSelectedPortal(tab.key);
+                      if (tab.key !== 'CUSTOMER') setCustomerSetupMode(false);
+                      setError('');
+                    }}
+                  >
+                    <Text
+                      style={[styles.roleTabText, { color: active ? '#FFFFFF' : colors.textSecondary }]}
+                      numberOfLines={1}
+                    >
+                      {tab.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
-            <Text style={[styles.signInTitle, { color: colors.text }]}>
-              {loginMode === 'CUSTOMER'
-                ? customerSetupMode
-                  ? 'खातेदार तात्पुरता mPIN सेट करा'
-                  : 'खातेदार लॉगिन (Test Portal)'
-                : t.signInTitle}
-            </Text>
-            <Text style={[styles.signInSub, { color: colors.textMuted }]}>
-              {loginMode === 'CUSTOMER'
-                ? customerSetupMode
-                  ? 'नोंदणीकृत मोबाईल व CIF क्र. ने नवीन mPIN सेट करा'
-                  : 'मोबाईल क्र. / CIF आणि तुमचा mPIN प्रविष्ट करा'
-                : t.signInSub}
-            </Text>
+            <View style={styles.titleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.signInTitle, { color: colors.text }]}>
+                  {isDemo
+                    ? `${portalLabel} डेमो लॉगिन`
+                    : selectedPortal === 'CUSTOMER'
+                    ? customerSetupMode
+                      ? 'खातेदार तात्पुरता mPIN सेट करा'
+                      : 'खातेदार लॉगिन'
+                    : selectedPortal === 'ADMIN'
+                    ? 'मॅनेजर / अ‍ॅडमिन लॉगिन'
+                    : t.signInTitle}
+                </Text>
+                <Text style={[styles.signInSub, { color: colors.textMuted }]}>
+                  {isDemo
+                    ? 'कोणत्याही व्हॅलिडेशनशिवाय थेट डेमो सुरू करा'
+                    : selectedPortal === 'CUSTOMER'
+                    ? customerSetupMode
+                      ? 'नोंदणीकृत मोबाईल व CIF क्र. ने नवीन mPIN सेट करा'
+                      : 'मोबाईल क्र. / CIF आणि तुमचा mPIN प्रविष्ट करा'
+                    : t.signInSub}
+                </Text>
+              </View>
+            </View>
 
             {error !== '' && (
               <View style={[styles.errorBox, { backgroundColor: colors.dangerBg, borderColor: '#FCA5A5' }]}>
@@ -238,14 +322,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 usernameFocused && { borderColor: colors.primary, backgroundColor: '#FFFFFF' },
               ]}
             >
-              {loginMode === 'CUSTOMER' ? (
+              {selectedPortal === 'CUSTOMER' ? (
                 <Smartphone size={18} color={usernameFocused ? colors.primary : colors.textMuted} />
               ) : (
                 <User size={18} color={usernameFocused ? colors.primary : colors.textMuted} />
               )}
               <TextInput
                 style={[styles.textInput, { color: colors.text }]}
-                placeholder={loginMode === 'CUSTOMER' ? 'नोंदणीकृत मोबाईल क्र. किंवा CIF' : t.usernamePlaceholder}
+                placeholder={usernamePlaceholder}
                 placeholderTextColor={colors.textMuted}
                 value={username}
                 onChangeText={(txt) => {
@@ -256,13 +340,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 onBlur={() => setUsernameFocused(false)}
                 autoCapitalize="none"
                 autoCorrect={false}
-                keyboardType={loginMode === 'CUSTOMER' && customerSetupMode ? 'phone-pad' : 'default'}
+                keyboardType={!isDemo && selectedPortal === 'CUSTOMER' && customerSetupMode ? 'phone-pad' : 'default'}
                 returnKeyType="next"
               />
             </View>
 
-            {/* CIF Input (only during First-Time Temp PIN Activation) */}
-            {loginMode === 'CUSTOMER' && customerSetupMode && (
+            {/* CIF Input (only during Live First-Time Temp PIN Activation) */}
+            {!isDemo && selectedPortal === 'CUSTOMER' && customerSetupMode && (
               <View style={[styles.inputField, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
                 <KeyRound size={18} color={colors.textMuted} />
                 <TextInput
@@ -291,13 +375,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
               <Lock size={18} color={passwordFocused ? colors.primary : colors.textMuted} />
               <TextInput
                 style={[styles.textInput, { color: colors.text }]}
-                placeholder={
-                  loginMode === 'CUSTOMER'
-                    ? customerSetupMode
-                      ? 'नवीन ४–६ अंकी mPIN सेट करा'
-                      : 'mPIN (किंवा पहिली वेळ असल्यास CIF क्र.)'
-                    : t.passwordPlaceholder
-                }
+                placeholder={passwordPlaceholder}
                 placeholderTextColor={colors.textMuted}
                 value={password}
                 onChangeText={(txt) => {
@@ -307,7 +385,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 onFocus={() => setPasswordFocused(true)}
                 onBlur={() => setPasswordFocused(false)}
                 secureTextEntry={!showPassword}
-                keyboardType={loginMode === 'CUSTOMER' && customerSetupMode ? 'numeric' : 'default'}
+                keyboardType={!isDemo && selectedPortal === 'CUSTOMER' && customerSetupMode ? 'numeric' : 'default'}
                 returnKeyType="done"
                 onSubmitEditing={handleLogin}
               />
@@ -340,7 +418,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 ) : (
                   <>
                     <Text style={styles.submitText}>
-                      {loginMode === 'CUSTOMER' && customerSetupMode ? 'mPIN सेट करा आणि प्रवेश घ्या' : t.signInBtn}
+                      {isDemo
+                        ? `${portalLabel} डेमो सुरू करा`
+                        : selectedPortal === 'CUSTOMER' && customerSetupMode
+                        ? 'mPIN सेट करा आणि प्रवेश घ्या'
+                        : t.signInBtn}
                     </Text>
                     <ArrowRight size={18} color="#FFFFFF" strokeWidth={2.4} />
                   </>
@@ -348,7 +430,50 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
               </LinearGradient>
             </TouchableOpacity>
 
-            {loginMode === 'CUSTOMER' && (
+            {/* Quick 1-Tap Demo Launch Buttons */}
+            {isDemo && (
+              <View style={styles.quickDemoBlock}>
+                <View style={styles.quickDemoHeader}>
+                  <Sparkles size={13} color={colors.primary} />
+                  <Text style={[styles.quickDemoLabel, { color: colors.textSecondary }]}>
+                    झटपट 1-Tap डेमो पोर्टल्स (सर्व वापरकर्ते)
+                  </Text>
+                </View>
+                <View style={styles.quickDemoRow}>
+                  <TouchableOpacity
+                    style={[styles.quickDemoBtn, { backgroundColor: colors.infoBg, borderColor: colors.border }]}
+                    onPress={() => handleQuickDemo('AGENT')}
+                    disabled={loading}
+                    activeOpacity={0.78}
+                  >
+                    <Briefcase size={15} color={colors.primaryDark} />
+                    <Text style={[styles.quickDemoBtnText, { color: colors.primaryDark }]}>पिग्मी अ‍ॅप</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.quickDemoBtn, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}
+                    onPress={() => handleQuickDemo('ADMIN')}
+                    disabled={loading}
+                    activeOpacity={0.78}
+                  >
+                    <UserCheck size={15} color="#B45309" />
+                    <Text style={[styles.quickDemoBtnText, { color: '#B45309' }]}>मॅनेजर अ‍ॅप</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.quickDemoBtn, { backgroundColor: '#DCFCE7', borderColor: '#86EFAC' }]}
+                    onPress={() => handleQuickDemo('CUSTOMER')}
+                    disabled={loading}
+                    activeOpacity={0.78}
+                  >
+                    <Users size={15} color="#047857" />
+                    <Text style={[styles.quickDemoBtnText, { color: '#047857' }]}>खातेदार अ‍ॅप</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {!isDemo && selectedPortal === 'CUSTOMER' && (
               <TouchableOpacity
                 style={styles.toggleSetupBtn}
                 onPress={() => {
@@ -360,7 +485,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 <Text style={[styles.toggleSetupText, { color: colors.primary }]}>
                   {customerSetupMode
                     ? 'आधीच mPIN सेट आहे? परत लॉगिनवर जा'
-                    : 'प्रथमच टेस्टिंग? मोबाईल + CIF ने तात्पुरता mPIN सेट करा'}
+                    : 'प्रथमच लॉगिन? मोबाईल + CIF ने तात्पुरता mPIN सेट करा'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -368,7 +493,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
             <View style={styles.securityNoteRow}>
               <ShieldCheck size={14} color={colors.success} />
               <Text style={[styles.securityNoteText, { color: colors.textMuted }]}>
-                256-bit Encrypted CBS Session • Device Protected
+                {isDemo
+                  ? 'Demo Mode Active • Live Server साठी वर DEMO वर टॅप करा'
+                  : '256-bit Encrypted CBS Session • Device Protected'}
               </Text>
             </View>
           </View>
@@ -419,13 +546,13 @@ const styles = StyleSheet.create({
   },
   utilityBtns: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 7,
   },
   utilityBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: RADIUS.pill,
     backgroundColor: 'rgba(255,255,255,0.14)',
@@ -435,7 +562,7 @@ const styles = StyleSheet.create({
   utilityBtnText: {
     color: '#FFFFFF',
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   brandBlock: {
     alignItems: 'center',
@@ -492,17 +619,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   roleTabText: {
-    fontSize: 12.5,
+    fontSize: 12,
     fontWeight: '800',
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   signInTitle: {
-    fontSize: 19,
+    fontSize: 18.5,
     fontWeight: '800',
   },
   signInSub: {
     fontSize: 12.5,
     marginTop: 3,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   errorBox: {
     flexDirection: 'row',
@@ -526,12 +657,12 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderRadius: RADIUS.md,
     paddingHorizontal: 14,
-    height: 50,
-    marginBottom: 12,
+    height: 48,
+    marginBottom: 11,
   },
   textInput: {
     flex: 1,
-    fontSize: 14.5,
+    fontSize: 14,
     fontWeight: '600',
   },
   submitShadow: {
@@ -551,6 +682,41 @@ const styles = StyleSheet.create({
   submitText: {
     color: '#FFFFFF',
     fontSize: 15,
+    fontWeight: '800',
+  },
+  quickDemoBlock: {
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(148, 163, 184, 0.25)',
+  },
+  quickDemoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    marginBottom: 10,
+  },
+  quickDemoLabel: {
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  quickDemoRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  quickDemoBtn: {
+    flex: 1,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  quickDemoBtnText: {
+    fontSize: 11.5,
     fontWeight: '800',
   },
   toggleSetupBtn: {
@@ -574,6 +740,7 @@ const styles = StyleSheet.create({
   securityNoteText: {
     fontSize: 11,
     fontWeight: '600',
+    textAlign: 'center',
   },
   footerText: {
     textAlign: 'center',

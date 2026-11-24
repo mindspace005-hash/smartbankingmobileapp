@@ -309,3 +309,131 @@ export interface AgentCustomerRequest {
   initialDepositAmount: number;
   remarks: string;
 }
+
+// ==========================================
+// Executive Manager Command Center Models
+// ==========================================
+export type ManagerBranchId = 'ALL' | number;
+
+export interface ManagerBranchOption {
+  id: ManagerBranchId;
+  name: string;
+  shortName: string;
+  code: string;
+  eodStatus: 'OPEN' | 'PENDING' | 'CLOSED';
+  businessDate: string;
+}
+
+export interface ManagerProductMetric {
+  activeAccounts: number;
+  totalBalance: number;
+  extraLabel?: string;
+  extraValue?: string;
+}
+
+export interface ManagerPortfolioSummary {
+  branchId: ManagerBranchId;
+  branchName: string;
+  businessDate: string;
+  eodStatus: 'OPEN' | 'PENDING' | 'CLOSED';
+  totalDeposits: number;
+  totalLoanOutstanding: number;
+  totalLoanOverdue: number;
+  npaPercent: number;
+  cdRatioPercent: number;
+  branchCashInHand: number;
+  openingCash: number;
+  todayReceipts: number;
+  todayPayments: number;
+  todayCashCollection: number;
+  todayUpiCollection: number;
+  todaysReceiptsCount: number;
+  totalMembers: number;
+  fd: ManagerProductMetric;
+  saving: ManagerProductMetric;
+  pigmy: ManagerProductMetric;
+  rd: ManagerProductMetric;
+  loan: ManagerProductMetric;
+  shares: ManagerProductMetric;
+}
+
+export type ManagerApprovalCategory = 'CUSTOMER_KYC' | 'LOAN_APP' | 'VOUCHER';
+export type ManagerApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'HOLD';
+
+export interface ManagerApprovalItem {
+  id: string;
+  category: ManagerApprovalCategory;
+  title: string;
+  subtitle: string;
+  amount: number;
+  requestedBy: string;
+  requestedAt: string;
+  branchId: number;
+  branchName: string;
+  status: ManagerApprovalStatus;
+  remarks?: string;
+  details: { label: string; value: string }[];
+}
+
+export interface ManagerAgentControlItem extends AgentSummary {
+  branchId: number;
+  branchName: string;
+  cashInHand: number;
+  cashLimit: number;
+  todayCashAmount: number;
+  todayUpiAmount: number;
+  isLocked: boolean;
+  lastRemittanceDate: string;
+}
+
+export type OverdueBucket = '30D' | '60D' | 'NPA_90';
+
+export interface OverdueLoanItem {
+  id: string;
+  accountNo: string;
+  customerName: string;
+  phone: string;
+  loanScheme: string;
+  overdueInstallments: number;
+  overdueAmount: number;
+  outstandingPrincipal: number;
+  bucket: OverdueBucket;
+  branchId: number;
+  lastPaidDate: string;
+}
+
+export type MaturityBucket = 'UPCOMING_7' | 'UPCOMING_30' | 'MATURED_UNCLOSED';
+
+export interface MaturityAccountItem {
+  id: string;
+  productType: 'FD' | 'RD';
+  accountNo: string;
+  customerName: string;
+  phone: string;
+  schemeName: string;
+  principalAmount: number;
+  maturityAmount: number;
+  maturityDate: string;
+  daysRemaining: number;
+  interestRate: number;
+  bucket: MaturityBucket;
+  branchId: number;
+}
+
+export interface ManagerEodChecklistItem {
+  id: string;
+  label: string;
+  status: 'OK' | 'WARNING';
+  detail: string;
+}
+
+export interface ManagerCommandPayload {
+  branches: ManagerBranchOption[];
+  portfolio: ManagerPortfolioSummary;
+  approvals: ManagerApprovalItem[];
+  agents: ManagerAgentControlItem[];
+  overdueLoans: OverdueLoanItem[];
+  maturityItems: MaturityAccountItem[];
+  eodChecklist: ManagerEodChecklistItem[];
+}
+

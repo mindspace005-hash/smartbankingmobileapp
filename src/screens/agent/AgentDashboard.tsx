@@ -37,6 +37,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({ onSelectReceipt 
   const {
     accounts,
     collections,
+    isDemoMode,
     addCollectionRecord,
     currentUser,
     checkLockStatus,
@@ -238,7 +239,7 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({ onSelectReceipt 
       showToast('कृपया वैध रक्कम प्रविष्ट करा.', 'warning');
       return;
     }
-    if (selectedProductCollection.productType === 'SAVING' && numericAmount < 10) {
+    if (!isDemoMode && selectedProductCollection.productType === 'SAVING' && numericAmount < 10) {
       triggerErrorHaptic();
       showToast('बचत खात्यात किमान ₹१० जमा आवश्यक आहे.', 'warning');
       return;
@@ -323,7 +324,12 @@ export const AgentDashboard: React.FC<AgentDashboardProps> = ({ onSelectReceipt 
     oldAccNo: string;
     schemeId: number;
   }) => {
-    if (!payload.name.trim() || !payload.phone.trim()) {
+    if (isDemoMode) {
+      if (!payload.name.trim()) {
+        showToast('ग्राहकाचे नाव आवश्यक आहे.', 'warning');
+        return;
+      }
+    } else if (!payload.name.trim() || !payload.phone.trim()) {
       showToast('ग्राहकाचे नाव आणि मोबाईल नंबर आवश्यक आहे.', 'warning');
       return;
     }

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { AppState, AppStateStatus, Alert } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -7,9 +7,29 @@ import {
   UserRole, User, CollectionRecord, PigmiAccount, AgentSummary,
   DashboardSummary, RemittanceStatus, PassbookStatement, CollectionReport, CommissionReport,
   PassbookTransaction, CollectionReportItem, PigmyScheme, DropdownOptions, AgentCustomerRequest,
-  AgentCustomer, ProductType, CustomerDoorstepProfile
+  AgentCustomer, ProductType, CustomerDoorstepProfile,
+  ManagerBranchId, ManagerCommandPayload, ManagerApprovalItem, ManagerApprovalStatus,
+  ManagerAgentControlItem, ManagerEodChecklistItem
 } from '../types';
 import { apiClient, setInMemoryAuthToken, registerUnauthorizedHandler } from '../config';
+import {
+  DEMO_USERS,
+  DEMO_AGENTS,
+  DEMO_PIGMI_ACCOUNTS,
+  DEMO_AGENT_CUSTOMERS,
+  DEMO_DOORSTEP_PROFILES,
+  DEMO_CUSTOMER_PORTAL_DATA,
+  DEMO_CUSTOMER_PASSBOOKS,
+  DEMO_SCHEMES,
+  DEMO_BRANCHES,
+  DEMO_BRANCH_SEEDS,
+  DEMO_MANAGER_APPROVALS,
+  DEMO_MANAGER_AGENTS,
+  DEMO_OVERDUE_LOANS,
+  DEMO_MATURITY_ITEMS,
+  buildInitialDemoCollections,
+  DemoCustomerPassbook,
+} from '../data/mockData';
 
 const EMPTY_USER: User = {
   id: '',
@@ -21,14 +41,23 @@ const EMPTY_USER: User = {
 
 interface AuthContextType {
   isAuthenticated: boolean;
+  isDemoMode: boolean;
   currentRole: UserRole;
   currentUser: User;
   login: (username?: string, password?: string, role?: UserRole, credential?: any) => Promise<void>;
+  loginDemo: (role: UserRole, customIdentifier?: string) => Promise<void>;
+  switchDemoRole: (role: UserRole) => void;
   logout: () => Promise<void>;
   accounts: PigmiAccount[];
   collections: CollectionRecord[];
   agents: AgentSummary[];
   agentCustomers: AgentCustomer[];
+  managerApprovals: ManagerApprovalItem[];
+  managerAgents: ManagerAgentControlItem[];
+  fetchManagerCommandData: (branchId?: ManagerBranchId) => Promise<ManagerCommandPayload>;
+  updateManagerApproval: (id: string, status: ManagerApprovalStatus, remarks?: string) => Promise<void>;
+  toggleManagerAgentLock: (agentId: string) => Promise<void>;
+  acceptManagerAgentRemittance: (agentId: string, amount: number) => Promise<void>;
   fetchAgentProfile: (agentId: string | number) => Promise<any>;
   fetchAgentAccounts: (agentId: string | number) => Promise<PigmiAccount[]>;
   fetchAgentCustomers: (agentId: string | number) => Promise<AgentCustomer[]>;
@@ -119,6 +148,8 @@ interface AuthContextType {
   }) => Promise<CollectionRecord>;
 }
 
+const deepClone = <T,>(obj: T): T => JSON.parse(JSON.stringify(obj));
+
 const parsePositiveId = (value?: string | number | null): number | null => {
   if (value === undefined || value === null) return null;
   const parsed = parseInt(String(value).replace(/^[a-z_]+/i, ''), 10);
@@ -129,6 +160,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
   const [currentRole, setCurrentRole] = useState<UserRole>('AGENT');
   const [currentUser, setCurrentUser] = useState<User>(EMPTY_USER);
   const [accounts, setAccounts] = useState<PigmiAccount[]>([]);
@@ -141,7 +173,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [serverLockStatus, setServerLockStatus] = useState<RemittanceStatus | null>(null);
   const [serverDashboardSummary, setServerDashboardSummary] = useState<DashboardSummary | null>(null);
 
+  // Shared In-Memory Demo Store (synchronized across Agent, Manager & Customer demos)
+  const demoInitializedRef = useRef(false);
+  const [demoProfiles, setDemoProfiles] = useState<Record<string, CustomerDoorstepProfile>>(() =>
+    deepClone(DEMO_DOORSTEP_PROFILES)
+  );
+  const [demoPortalAccounts, setDemoPortalAccounts] = useState(() =>
+    deepClone(DEMO_CUSTOMER_PORTAL_DATA.accounts)
+  );
+  const [demoPassbooks, setDemoPassbooks] = useState<Record<string, DemoCustomerPassbook>>(() =>
+    deepClone(DEMO_CUSTOMER_PASSBOOKS)
+  );
+  const [managerApprovals, setManagerApprovals] = useState<ManagerApprovalItem[]>(() =>
+    deepClone(DEMO_MANAGER_APPROVALS)
+  );
+  const [managerAgents, setManagerAgents] = useState<ManagerAgentControlItem[]>(() =>
+    deepClone(DEMO_MANAGER_AGENTS)
+  );
+  const [managerRemittedCashByBranch, setManagerRemittedCashByBranch] = useState<Record<number, number>>({});
+
+  const ensureDemoStoreInitialized = (forceReset = false) => {
+    if (demoInitializedRef.current && !forceReset) return;
+    demoInitializedRef.current = true;
+    setAccounts(deepClone(DEMO_PIGMI_ACCOUNTS));
+    setAgentCustomers(deepClone(DEMO_AGENT_CUSTOMERS));
+    setAgents(deepClone(DEMO_AGENTS));
+    setCollections(buildInitialDemoCollections());
+    setDemoProfiles(deepClone(DEMO_DOORSTEP_PROFILES));
+    setDemoPortalAccounts(deepClone(DEMO_CUSTOMER_PORTAL_DATA.accounts));
+    setDemoPassbooks(deepClone(DEMO_CUSTOMER_PASSBOOKS));
+    setManagerApprovals(deepClone(DEMO_MANAGER_APPROVALS));
+    setManagerAgents(deepClone(DEMO_MANAGER_AGENTS));
+    setManagerRemittedCashByBranch({});
+    setServerLockStatus(null);
+    setServerDashboardSummary(null);
+  };
+
   const fetchLockStatus = async (agentIdInput?: string | number): Promise<RemittanceStatus | null> => {
+    if (isDemoMode) {
+      return {
+        agentId: agentIdInput || currentUser.agentId || '2',
+        collect_Pigmi: 1,
+        is_pending: 0,
+        status: 'ALLOWED',
+        message: 'डेमो मोड सक्रिय — वसुलीसाठी एजंट अधिकृत आहे.',
+        previousDaysCollectionDetails: [],
+      };
+    }
     const rawId = parsePositiveId(agentIdInput ?? currentUser.agentId ?? (await AsyncStorage.getItem('AGENT_ID')));
     if (!rawId) return null;
     try {
@@ -279,6 +357,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return mergedCollections;
   };
   const refreshAgentData = async () => {
+    if (isDemoMode) return;
     const resolvedAgentId = parsePositiveId(currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')));
     if (!resolvedAgentId) return;
     const rawAgentId = String(resolvedAgentId);
@@ -439,6 +518,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const bootstrapAsync = async () => {
       try {
         await AsyncStorage.removeItem('AUTH_TOKEN');
+        const savedDemoMode = await AsyncStorage.getItem('DEMO_MODE');
+        const savedRole = (await AsyncStorage.getItem('CURRENT_ROLE')) as UserRole | null;
+        if (savedDemoMode === 'true') {
+          const demoRole: UserRole =
+            savedRole === 'ADMIN' || savedRole === 'CUSTOMER' ? savedRole : 'AGENT';
+          ensureDemoStoreInitialized(true);
+          setIsDemoMode(true);
+          setCurrentRole(demoRole);
+          setCurrentUser(DEMO_USERS[demoRole]);
+          setIsAuthenticated(true);
+          return;
+        }
         let credentials: any = false;
         try {
           credentials = await Keychain.getGenericPassword({
@@ -450,7 +541,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch {
           credentials = await Keychain.getGenericPassword();
         }
-        const savedRole = (await AsyncStorage.getItem('CURRENT_ROLE')) as UserRole | null;
         const savedAgentId = await AsyncStorage.getItem('AGENT_ID');
         if (credentials && credentials.password) {
           const token = credentials.password;
@@ -502,6 +592,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     const loadPendingCollections = async () => {
       try {
+        if ((await AsyncStorage.getItem('DEMO_MODE')) === 'true') return;
         const historyRaw = await AsyncStorage.getItem('TODAYS_COLLECTIONS_HISTORY');
         const pendingRaw = await AsyncStorage.getItem('PENDING_COLLECTIONS');
         let queue: CollectionRecord[] = [];
@@ -586,7 +677,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await establishCustomerSession(res.data, mobileNo.trim());
   };
 
+  const loginDemo = async (role: UserRole, _customIdentifier?: string) => {
+    ensureDemoStoreInitialized(!isDemoMode);
+    setInMemoryAuthToken('');
+    setAuthToken('');
+    setIsDemoMode(true);
+    setCurrentRole(role);
+    setCurrentUser(DEMO_USERS[role]);
+    setIsAuthenticated(true);
+    await AsyncStorage.setItem('DEMO_MODE', 'true').catch(() => {});
+    await AsyncStorage.setItem('CURRENT_ROLE', role).catch(() => {});
+  };
+
+  const switchDemoRole = (role: UserRole) => {
+    if (!isDemoMode) return;
+    ensureDemoStoreInitialized(false);
+    setCurrentRole(role);
+    setCurrentUser(DEMO_USERS[role]);
+    AsyncStorage.setItem('CURRENT_ROLE', role).catch(() => {});
+  };
+
   const login = async (username?: string, password?: string, role?: UserRole, _credential?: any) => {
+    setIsDemoMode(false);
+    demoInitializedRef.current = false;
+    await AsyncStorage.removeItem('DEMO_MODE').catch(() => {});
     const cleanUsername = (username || '').trim();
     const cleanPassword = password || '';
 
@@ -700,6 +814,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await Keychain.resetGenericPassword();
     } catch {}
     await AsyncStorage.multiRemove([
+      'DEMO_MODE',
       'AGENT_ID',
       'AUTH_TOKEN',
       'CURRENT_ROLE',
@@ -710,12 +825,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       'OFFLINE_ACCOUNTS',
       'OFFLINE_CUSTOMERS'
     ]);
+    demoInitializedRef.current = false;
+    setIsDemoMode(false);
     setInMemoryAuthToken('');
     setAuthToken('');
     setAgentCustomers([]);
     setAccounts([]);
     setCollections([]);
     setAgents([]);
+    setDemoProfiles(deepClone(DEMO_DOORSTEP_PROFILES));
+    setDemoPortalAccounts(deepClone(DEMO_CUSTOMER_PORTAL_DATA.accounts));
+    setDemoPassbooks(deepClone(DEMO_CUSTOMER_PASSBOOKS));
+    setManagerApprovals(deepClone(DEMO_MANAGER_APPROVALS));
+    setManagerAgents(deepClone(DEMO_MANAGER_AGENTS));
+    setManagerRemittedCashByBranch({});
     setServerDashboardSummary(null);
     setServerLockStatus(null);
     setCurrentUser(EMPTY_USER);
@@ -793,6 +916,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       )
     );
 
+    if (isDemoMode) {
+      const syncedRecord: CollectionRecord = {
+        ...newRecord,
+        syncStatus: 'SYNCED',
+        newBalance: account.currentBalance + amount,
+      };
+      setCollections((prev) => [syncedRecord, ...prev]);
+      setLastCreatedReceipt(syncedRecord);
+      return syncedRecord;
+    }
+
     setCollections((prev) => [newRecord, ...prev]);
     setLastCreatedReceipt(newRecord);
 
@@ -846,6 +980,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     customerIdInput: string | number,
     hintAccount?: PigmiAccount
   ): Promise<CustomerDoorstepProfile> => {
+    if (isDemoMode) {
+      const cleanIn = String(customerIdInput ?? '').replace(/^cst_/i, '').replace(/^acc_/i, '').trim();
+      const hintCustId = hintAccount?.customerId ? String(hintAccount.customerId).replace(/^cst_/i, '') : '';
+      const directProfile =
+        (hintCustId && demoProfiles[hintCustId]) ||
+        (cleanIn && demoProfiles[cleanIn]) ||
+        Object.values(demoProfiles).find(
+          (p) =>
+            (hintAccount?.cifNo && p.cifNo.toUpperCase() === hintAccount.cifNo.toUpperCase()) ||
+            (hintAccount?.accountNumber &&
+              p.pigmyAccounts.some((pa) => pa.accountNo === hintAccount.accountNumber)) ||
+            p.pigmyAccounts.some((pa) => String(pa.accountId) === cleanIn)
+        );
+      if (directProfile) {
+        return deepClone(directProfile);
+      }
+      if (hintAccount) {
+        const parsedAccId = parsePositiveId(hintAccount.id) || 999;
+        return {
+          customerId: hintAccount.customerId || parsedAccId,
+          cifNo: hintAccount.cifNo || `CIF-${parsedAccId}`,
+          customerName: hintAccount.customerName,
+          mobileNo: hintAccount.customerPhone || '',
+          address: hintAccount.customerAddress || '',
+          pigmyAccounts: [
+            {
+              accountId: parsedAccId,
+              accountNo: hintAccount.accountNumber,
+              oldAccountNo: hintAccount.oldAccountNo,
+              productType: 'PIGMY',
+              productTitle: 'दैनिक ठेव (Pigmy)',
+              schemeName: 'दैनंदिन पिग्मी योजना',
+              currentBalance: hintAccount.currentBalance,
+              targetAmount: hintAccount.dailyTargetAmount || 100,
+              isAgentAllowed: true,
+              status: 'Active',
+            },
+          ],
+          loanAccounts: [],
+          savingAccounts: [],
+          rdAccounts: [],
+          totalPermittedAccounts: 1,
+        };
+      }
+    }
     const resolvedAgentId = parsePositiveId(currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')));
     const rawAgentId = resolvedAgentId ? String(resolvedAgentId) : '';
     const inputStr = (customerIdInput ?? '').toString();
@@ -1057,6 +1236,173 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       )
     );
 
+    if (isDemoMode) {
+      const syncedRecord: CollectionRecord = {
+        ...newRecord,
+        syncStatus: 'SYNCED',
+      };
+
+      const interestPart = productType === 'LOAN' ? Math.round(amount * 0.25) : 0;
+      const principalPart = productType === 'LOAN' ? Math.max(0, amount - interestPart) : 0;
+      if (productType === 'LOAN') {
+        syncedRecord.overdueInterestCollected = 0;
+        syncedRecord.regularInterestCollected = interestPart;
+        syncedRecord.principalCollected = principalPart;
+      }
+
+      // Compute updated balance synchronously from current demoProfiles snapshot
+      let updatedBalance: number | undefined;
+      for (const prof of Object.values(demoProfiles)) {
+        if (productType === 'PIGMY') {
+          const pAcc = prof.pigmyAccounts.find(
+            (a) => String(a.accountId) === String(rawAccountId) || a.accountNo === accountNo
+          );
+          if (pAcc) {
+            updatedBalance = pAcc.currentBalance + amount;
+            break;
+          }
+        } else if (productType === 'SAVING') {
+          const sAcc = prof.savingAccounts.find(
+            (a) => String(a.accountId) === String(rawAccountId) || a.accountNo === accountNo
+          );
+          if (sAcc) {
+            updatedBalance = sAcc.currentBalance + amount;
+            break;
+          }
+        } else if (productType === 'RD') {
+          const rAcc = prof.rdAccounts.find(
+            (a) => String(a.accountId) === String(rawAccountId) || a.accountNo === accountNo
+          );
+          if (rAcc) {
+            updatedBalance = rAcc.currentBalance + amount;
+            syncedRecord.paidInstallments = (rAcc.paidInstallments || 0) + 1;
+            syncedRecord.totalDepositedAmount = updatedBalance;
+            break;
+          }
+        } else if (productType === 'LOAN') {
+          const lAcc = prof.loanAccounts.find(
+            (a) => String(a.accountId) === String(rawAccountId) || a.accountNo === accountNo
+          );
+          if (lAcc) {
+            updatedBalance = Math.max(0, lAcc.currentBalance - principalPart);
+            syncedRecord.newPrincipalBalance = updatedBalance;
+            break;
+          }
+        }
+      }
+
+      // 1. Update Demo Doorstep Profiles
+      setDemoProfiles((prev) => {
+        const next = deepClone(prev);
+        for (const key of Object.keys(next)) {
+          const prof = next[key];
+          if (productType === 'PIGMY') {
+            const pAcc = prof.pigmyAccounts.find(
+              (a) => String(a.accountId) === String(rawAccountId) || a.accountNo === accountNo
+            );
+            if (pAcc) pAcc.currentBalance += amount;
+          } else if (productType === 'SAVING') {
+            const sAcc = prof.savingAccounts.find(
+              (a) => String(a.accountId) === String(rawAccountId) || a.accountNo === accountNo
+            );
+            if (sAcc) sAcc.currentBalance += amount;
+          } else if (productType === 'RD') {
+            const rAcc = prof.rdAccounts.find(
+              (a) => String(a.accountId) === String(rawAccountId) || a.accountNo === accountNo
+            );
+            if (rAcc) {
+              rAcc.currentBalance += amount;
+              rAcc.paidInstallments = (rAcc.paidInstallments || 0) + 1;
+            }
+          } else if (productType === 'LOAN') {
+            const lAcc = prof.loanAccounts.find(
+              (a) => String(a.accountId) === String(rawAccountId) || a.accountNo === accountNo
+            );
+            if (lAcc) {
+              lAcc.currentBalance = Math.max(0, lAcc.currentBalance - principalPart);
+            }
+          }
+        }
+        return next;
+      });
+
+      // 2. Sync matching Customer Portal Account Balance
+      setDemoPortalAccounts((prev) => {
+        const next = deepClone(prev);
+        const listKey =
+          productType === 'PIGMY'
+            ? 'pigmyAccounts'
+            : productType === 'SAVING'
+            ? 'savingAccounts'
+            : productType === 'RD'
+            ? 'rdAccounts'
+            : 'loanAccounts';
+        const match = next[listKey].find(
+          (a) => Number(a.accountId) === Number(rawAccountId) || a.accountNo === accountNo
+        );
+        if (match) {
+          if (productType === 'LOAN') {
+            match.balance = Math.max(0, match.balance - principalPart);
+          } else {
+            match.balance += amount;
+          }
+        }
+        return next;
+      });
+
+      // 3. Prepend transaction to Customer Passbook
+      const pbKey = `${productType}_${rawAccountId}`;
+      setDemoPassbooks((prev) => {
+        const next = deepClone(prev);
+        const existing = next[pbKey] || {
+          productType,
+          accountNo,
+          currentBalance: updatedBalance ?? amount,
+          transactions: [],
+        };
+        const newBal =
+          productType === 'LOAN'
+            ? Math.max(0, existing.currentBalance - principalPart)
+            : existing.currentBalance + amount;
+        existing.currentBalance = newBal;
+        existing.transactions.unshift({
+          id: Date.now(),
+          date: timestampStr,
+          type: productType === 'LOAN' ? 'EMI_PAYMENT' : productType === 'RD' ? 'INSTALLMENT' : 'DEPOSIT',
+          crAmount: amount,
+          drAmount: 0,
+          balance: newBal,
+          narration: `${remarks || productTitle} (${paymentMode}) • एजंट: ${currentUser.name}`,
+          reference: defaultReceiptNo,
+        });
+        next[pbKey] = existing;
+        return next;
+      });
+
+      // 4. Sync Manager Field Agent Control metrics (Cash-in-hand / Cash vs UPI split)
+      setManagerAgents((prev) =>
+        prev.map((ma) => {
+          if (ma.id !== (currentUser.agentId || 'agt_2')) return ma;
+          const isCash = paymentMode === 'CASH';
+          return {
+            ...ma,
+            todayCollectedAmount: ma.todayCollectedAmount + amount,
+            todayCashAmount: ma.todayCashAmount + (isCash ? amount : 0),
+            todayUpiAmount: ma.todayUpiAmount + (isCash ? 0 : amount),
+            cashInHand: ma.cashInHand + (isCash ? amount : 0),
+          };
+        })
+      );
+
+      if (updatedBalance !== undefined && productType !== 'LOAN') {
+        syncedRecord.newBalance = updatedBalance;
+      }
+
+      setCollections((prev) => [syncedRecord, ...prev]);
+      setLastCreatedReceipt(syncedRecord);
+      return syncedRecord;
+    }
+
     setCollections(prev => [newRecord, ...prev]);
     setLastCreatedReceipt(newRecord);
 
@@ -1209,6 +1555,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const clearLastReceipt = () => setLastCreatedReceipt(null);
 
   const fetchDashboardSummary = async (agentIdInput?: string | number): Promise<DashboardSummary> => {
+    if (isDemoMode) {
+      return getDashboardSummary();
+    }
     const rawId = (agentIdInput || currentUser.agentId || (await AsyncStorage.getItem('AGENT_ID')) || '').toString().replace('agt_', '');
     try {
       const res = await apiClient.get('/api/dashboard/summary', {
@@ -1277,6 +1626,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const checkLockStatus = (): RemittanceStatus => {
+    if (isDemoMode) {
+      return {
+        agentId: agentId || 'agt_2',
+        collect_Pigmi: 1,
+        is_pending: 0,
+        status: 'ALLOWED',
+        message: 'डेमो मोड सक्रिय — वसुलीसाठी एजंट अधिकृत आहे.',
+        previousDaysCollectionDetails: []
+      };
+    }
     if (serverLockStatus) {
       return serverLockStatus;
     }
@@ -1292,6 +1651,108 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const createCustomer = async (data: Partial<AgentCustomerRequest>): Promise<any> => {
+    if (isDemoMode) {
+      const fName = (data.firstName || '').trim() || 'नवीन ग्राहक';
+      const mName = (data.middleName || '').trim();
+      const lName = (data.lastName || '').trim();
+      const fullName = [fName, mName, lName && lName !== fName ? lName : ''].filter(Boolean).join(' ').trim();
+      const nextNum = 700 + accounts.length + 1;
+      const newCustId = 100 + accounts.length + 1;
+      const newCif = `CIF0${newCustId}`;
+      const newAccNo = `00130100000${nextNum}`;
+      const dailyAmt = Number(data.dailyDepositAmount) > 0 ? Number(data.dailyDepositAmount) : 100;
+      const phone = (data.mobileNo || '').trim() || '9800000000';
+      const address = (data.address || '').trim() || 'कोल्हापूर';
+      const todayIso = new Date().toISOString().split('T')[0];
+
+      const newPigmyAccount: PigmiAccount = {
+        id: `acc_${nextNum}`,
+        customerId: newCustId,
+        accountNumber: newAccNo,
+        cifNo: newCif,
+        oldAccountNo: (data.oldAccountNo || '').trim() || String(20150 + accounts.length),
+        customerName: fullName,
+        customerPhone: phone,
+        customerAddress: address,
+        agentId: currentUser.agentId || 'agt_2',
+        agentName: currentUser.name || DEMO_USERS.AGENT.name,
+        dailyTargetAmount: dailyAmt,
+        currentBalance: 0,
+        totalCollected: 0,
+        startDate: todayIso,
+        maturityDate: '2027-12-31',
+        interestRatePercentage: 7.5,
+        status: 'ACTIVE',
+      };
+
+      const newCustomerRow: AgentCustomer = {
+        customerId: newCustId,
+        cifNo: newCif,
+        oldAccountNo: newPigmyAccount.oldAccountNo,
+        customerName: fullName,
+        mobileNo: phone,
+        address,
+        totalAccounts: 1,
+        totalBalance: 0,
+      };
+
+      const newProfile: CustomerDoorstepProfile = {
+        customerId: newCustId,
+        cifNo: newCif,
+        customerName: fullName,
+        mobileNo: phone,
+        address,
+        agentId: 2,
+        pigmyAccounts: [
+          {
+            accountId: nextNum,
+            accountNo: newAccNo,
+            oldAccountNo: newPigmyAccount.oldAccountNo,
+            productType: 'PIGMY',
+            productTitle: 'दैनिक ठेव (Pigmy)',
+            schemeName: 'दैनंदिन पिग्मी योजना',
+            currentBalance: 0,
+            targetAmount: dailyAmt,
+            isAgentAllowed: true,
+            status: 'Active',
+          },
+        ],
+        loanAccounts: [],
+        savingAccounts: [],
+        rdAccounts: [],
+        totalPermittedAccounts: 1,
+      };
+
+      setAccounts((prev) => [newPigmyAccount, ...prev]);
+      setAgentCustomers((prev) => [newCustomerRow, ...prev]);
+      setDemoProfiles((prev) => ({ ...prev, [String(newCustId)]: newProfile }));
+      setManagerApprovals((prev) => [
+        {
+          id: `apr_kyc_live_${Date.now()}`,
+          category: 'CUSTOMER_KYC',
+          title: fullName,
+          subtitle: 'एजंटकडून नवीन ग्राहक व पिग्मी खाते अर्ज',
+          amount: dailyAmt,
+          requestedBy: `${currentUser.name || DEMO_USERS.AGENT.name} (एजंट)`,
+          requestedAt: 'आत्ताच',
+          branchId: 1,
+          branchName: 'मुख्य शाखा, कोल्हापूर',
+          status: 'PENDING',
+          details: [
+            { label: 'खाते क्र.', value: newAccNo },
+            { label: 'मोबाईल क्र.', value: phone },
+            { label: 'दैनिक ठेव', value: `₹${dailyAmt} / दिवस` },
+            { label: 'पत्ता', value: address },
+          ],
+        },
+        ...prev,
+      ]);
+
+      return {
+        success: true,
+        message: `${fullName} यांचे नवीन पिग्मी खाते (${newAccNo}) डेमो यादीत जोडले!`,
+      };
+    }
     try {
       const fName = (data.firstName || '').trim();
       let lName = (data.lastName || '').trim();
@@ -1333,6 +1794,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const fetchPigmySchemes = async (): Promise<PigmyScheme[]> => {
+    if (isDemoMode) {
+      return DEMO_SCHEMES;
+    }
     try {
       const response = await apiClient.get('/api/PigmyApp/schemes');
       const data = response.data;
@@ -1360,6 +1824,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const bulkSyncCollections = async (items?: any[]) => {
+    if (isDemoMode) {
+      return {
+        success: true,
+        collect_Pigmi: 1,
+        message: 'सर्व डेमो पावत्या आधीच सिंक आहेत!',
+        savedCount: 0,
+      };
+    }
     try {
       const pendingRaw = await AsyncStorage.getItem('PENDING_COLLECTIONS');
       const rawQueue: CollectionRecord[] = pendingRaw ? JSON.parse(pendingRaw) : [];
@@ -1646,6 +2118,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     toDate?: string
   ): Promise<PassbookStatement> => {
     const rawAccId = String(accountId).replace('acc_', '');
+    if (isDemoMode) {
+      const acc =
+        accounts.find((a) => a.id === accountId || a.id === `acc_${rawAccId}`) || accounts[0];
+      const pbEntry = demoPassbooks[`PIGMY_${rawAccId}`];
+      if (pbEntry && acc) {
+        return {
+          pigmyAccountId: rawAccId,
+          accountNo: acc.accountNumber,
+          memberName: acc.customerName,
+          agentName: acc.agentName || currentUser.name,
+          openingDate: acc.startDate,
+          fromDate: fromDate || acc.startDate,
+          toDate: toDate || new Date().toISOString().split('T')[0],
+          openingBalance: 0,
+          totalCredit: acc.totalCollected,
+          closingBalance: pbEntry.currentBalance,
+          currentTotalBalance: pbEntry.currentBalance,
+          transactions: pbEntry.transactions.map((t) => ({
+            collectionId: t.id,
+            date: t.date,
+            receiptNo: t.reference || t.narration,
+            creditAmount: t.crAmount,
+            runningBalance: t.balance,
+            source: 'APP' as const,
+          })),
+        };
+      }
+      return getPassbookStatement(accountId, fromDate, toDate);
+    }
     try {
       const res = await apiClient.get(`/api/reports/passbook/${rawAccId}`, {
         params: {
@@ -1709,6 +2210,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const todayIso = new Date().toISOString().split('T')[0];
     const effectiveFrom = fromDate || todayIso;
     const effectiveTo = toDate || todayIso;
+    if (isDemoMode) {
+      return getCollectionReport(effectiveFrom, effectiveTo);
+    }
     try {
       const res = await apiClient.get('/api/reports/collections', {
         params: { fromDate: effectiveFrom, toDate: effectiveTo },
@@ -1745,6 +2249,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const todayIso = new Date().toISOString().split('T')[0];
     const effectiveFrom = fromDate || todayIso;
     const effectiveTo = toDate || todayIso;
+    if (isDemoMode) {
+      const baseMonthly = 68500;
+      const liveSum = collections.reduce((s, c) => s + c.amount, 0);
+      const totalCollected = baseMonthly + liveSum;
+      const rate = 3;
+      const calculated = Math.round((totalCollected * rate) / 100);
+      const paid = Math.round(calculated * 0.4);
+      return {
+        agentId: agentId || 'agt_2',
+        fromDate: effectiveFrom,
+        toDate: effectiveTo,
+        totalCollectedAmount: totalCollected,
+        commissionRate: rate,
+        rateType: 'PERCENTAGE',
+        calculatedCommission: calculated,
+        paidCommission: paid,
+        pendingCommission: Math.max(0, calculated - paid),
+        paidVouchersCount: 2,
+      };
+    }
     try {
       const res = await apiClient.get('/api/reports/commission', {
         params: { fromDate: effectiveFrom, toDate: effectiveTo },
@@ -1771,6 +2295,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const fetchPigmyBookReport = async (
     filter: 'TODAY' | 'LAST_7_DAYS' | 'THIS_MONTH' | 'LAST_MONTH'
   ): Promise<{ totalCollection: number; dailyRecords: { date: string; customers: number; amount: number }[] }> => {
+    if (isDemoMode) {
+      const todaySum = collections.reduce((s, c) => s + c.amount, 0);
+      const todayCusts = new Set(collections.map((c) => String(c.accountId))).size;
+      const fmtDay = (offsetDays: number) => {
+        const d = new Date();
+        d.setDate(d.getDate() - offsetDays);
+        return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+      };
+      if (filter === 'TODAY') {
+        return {
+          totalCollection: todaySum,
+          dailyRecords: [{ date: fmtDay(0), customers: todayCusts, amount: todaySum }],
+        };
+      }
+      if (filter === 'LAST_7_DAYS') {
+        const records = [
+          { date: fmtDay(0), customers: todayCusts, amount: todaySum },
+          { date: fmtDay(1), customers: 6, amount: 3500 },
+          { date: fmtDay(2), customers: 5, amount: 2800 },
+          { date: fmtDay(3), customers: 6, amount: 4100 },
+          { date: fmtDay(4), customers: 4, amount: 2200 },
+          { date: fmtDay(5), customers: 6, amount: 3600 },
+          { date: fmtDay(6), customers: 5, amount: 3100 },
+        ];
+        return {
+          totalCollection: records.reduce((s, r) => s + r.amount, 0),
+          dailyRecords: records,
+        };
+      }
+      if (filter === 'THIS_MONTH') {
+        const records = [
+          { date: fmtDay(0), customers: todayCusts, amount: todaySum },
+          { date: fmtDay(1), customers: 6, amount: 3500 },
+          { date: fmtDay(2), customers: 5, amount: 2800 },
+          { date: fmtDay(3), customers: 6, amount: 4100 },
+          { date: fmtDay(7), customers: 6, amount: 3900 },
+          { date: fmtDay(10), customers: 5, amount: 3200 },
+        ];
+        return {
+          totalCollection: records.reduce((s, r) => s + r.amount, 0),
+          dailyRecords: records,
+        };
+      }
+      const lastMonthRecords = [
+        { date: '25/10', customers: 6, amount: 4200 },
+        { date: '20/10', customers: 6, amount: 3800 },
+        { date: '15/10', customers: 5, amount: 3400 },
+        { date: '10/10', customers: 6, amount: 4000 },
+        { date: '05/10', customers: 5, amount: 3100 },
+      ];
+      return {
+        totalCollection: lastMonthRecords.reduce((s, r) => s + r.amount, 0),
+        dailyRecords: lastMonthRecords,
+      };
+    }
     const res = await apiClient.get('/api/reports/pigmy-book', {
       params: { filter },
     });
@@ -1789,6 +2368,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const fetchAdminSummary = async () => {
+    if (isDemoMode) {
+      const totalBalance = accounts.reduce((sum, a) => sum + Number(a.currentBalance || 0), 0);
+      const otherAgentsToday = agents
+        .filter((a) => a.id !== 'agt_2')
+        .reduce((sum, a) => sum + Number(a.todayCollectedAmount || 0), 0);
+      const demoAgentToday = collections.reduce((sum, c) => sum + Number(c.amount || 0), 0);
+      return {
+        totalBalance,
+        todaysCollection: otherAgentsToday + demoAgentToday,
+        todaysReceiptsCount: collections.length + 28,
+        activeAccountsCount: accounts.length + 64,
+        activeAgentsCount: agents.length,
+      };
+    }
     const res = await apiClient.get('/api/Dashboard/mobile-admin-summary');
     const d = res.data || {};
 
@@ -1836,7 +2429,408 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   };
 
+  const fetchManagerCommandData = async (branchId: ManagerBranchId = 'ALL'): Promise<ManagerCommandPayload> => {
+    const todayDisplay = (() => {
+      const n = new Date();
+      return `${String(n.getDate()).padStart(2, '0')}/${String(n.getMonth() + 1).padStart(2, '0')}/${n.getFullYear()}`;
+    })();
+
+    if (isDemoMode) {
+      const selectedBranchObj =
+        DEMO_BRANCHES.find((b) => b.id === branchId) || DEMO_BRANCHES[0];
+      const matchingSeeds =
+        branchId === 'ALL'
+          ? DEMO_BRANCH_SEEDS
+          : DEMO_BRANCH_SEEDS.filter((s) => s.branchId === branchId);
+
+      const filteredApprovals =
+        branchId === 'ALL'
+          ? managerApprovals
+          : managerApprovals.filter((a) => a.branchId === branchId);
+
+      const filteredAgents =
+        branchId === 'ALL'
+          ? managerAgents
+          : managerAgents.filter((a) => a.branchId === branchId);
+
+      const filteredOverdue =
+        branchId === 'ALL'
+          ? DEMO_OVERDUE_LOANS
+          : DEMO_OVERDUE_LOANS.filter((o) => o.branchId === branchId);
+
+      const filteredMaturities =
+        branchId === 'ALL'
+          ? DEMO_MATURITY_ITEMS
+          : DEMO_MATURITY_ITEMS.filter((m) => m.branchId === branchId);
+
+      // Include live demo collections added beyond initial 4 demo entries into Branch 1 totals
+      const extraCollections = collections.filter((c) => !c.id.startsWith('demo_rec_'));
+      const includeBranch1Delta = branchId === 'ALL' || branchId === 1;
+      const extraPigmy = includeBranch1Delta
+        ? extraCollections.filter((c) => !c.productType || c.productType === 'PIGMY').reduce((s, c) => s + c.amount, 0)
+        : 0;
+      const extraSaving = includeBranch1Delta
+        ? extraCollections.filter((c) => c.productType === 'SAVING').reduce((s, c) => s + c.amount, 0)
+        : 0;
+      const extraRd = includeBranch1Delta
+        ? extraCollections.filter((c) => c.productType === 'RD').reduce((s, c) => s + c.amount, 0)
+        : 0;
+      const extraLoanPrincipal = includeBranch1Delta
+        ? extraCollections.filter((c) => c.productType === 'LOAN').reduce((s, c) => s + (c.principalCollected ?? c.amount), 0)
+        : 0;
+
+      const sumField = (fn: (s: (typeof DEMO_BRANCH_SEEDS)[number]) => number) =>
+        matchingSeeds.reduce((acc, s) => acc + fn(s), 0);
+
+      const fdBalance = sumField((s) => s.fdBalance);
+      const savingBalance = sumField((s) => s.savingBalance) + extraSaving;
+      const pigmyBalance = sumField((s) => s.pigmyBalance) + extraPigmy;
+      const rdBalance = sumField((s) => s.rdBalance) + extraRd;
+      const totalDeposits = fdBalance + savingBalance + pigmyBalance + rdBalance;
+
+      const loanOutstanding = Math.max(0, sumField((s) => s.loanOutstanding) - extraLoanPrincipal);
+      const loanOverdue = sumField((s) => s.loanOverdue);
+      const cdRatioPercent = totalDeposits > 0 ? Math.round((loanOutstanding / totalDeposits) * 1000) / 10 : 0;
+      const avgNpa =
+        matchingSeeds.length > 0
+          ? Math.round((sumField((s) => s.npaPercent) / matchingSeeds.length) * 100) / 100
+          : 0;
+
+      const todayCashCollection = filteredAgents.reduce((s, a) => s + a.todayCashAmount, 0);
+      const todayUpiCollection = filteredAgents.reduce((s, a) => s + a.todayUpiAmount, 0);
+      const remittedCash = matchingSeeds.reduce(
+        (s, b) => s + (managerRemittedCashByBranch[b.branchId] || 0),
+        0
+      );
+      const openingCash = sumField((s) => s.openingCash);
+      const counterCashDeposits = matchingSeeds.length * 95000;
+      const todayReceipts = counterCashDeposits + todayCashCollection + todayUpiCollection + remittedCash;
+      const todayPayments = sumField((s) => s.todayPayments);
+      const branchCashInHand = Math.max(0, openingCash + counterCashDeposits + remittedCash - todayPayments);
+
+      const pendingVouchersCount = filteredApprovals.filter(
+        (a) => a.category === 'VOUCHER' && a.status === 'PENDING'
+      ).length;
+      const pendingAgentCashTotal = filteredAgents.reduce((s, a) => s + a.cashInHand, 0);
+      const lockedAgentsCount = filteredAgents.filter((a) => a.isLocked).length;
+      const maturedUnclosedCount = filteredMaturities.filter((m) => m.bucket === 'MATURED_UNCLOSED').length;
+
+      const eodChecklist: ManagerEodChecklistItem[] = [
+        {
+          id: 'eod_vouchers',
+          label: 'व्हाउचर पोस्टिंग (Maker-Checker)',
+          status: pendingVouchersCount === 0 ? 'OK' : 'WARNING',
+          detail:
+            pendingVouchersCount === 0
+              ? 'सर्व व्हाउचर्स तपासले व पोस्ट केले आहेत'
+              : `${pendingVouchersCount} उच्च-रकमेचे व्हाउचर मंजुरीच्या प्रतीक्षेत`,
+        },
+        {
+          id: 'eod_agent_cash',
+          label: 'एजंट रोख जमा (Remittance)',
+          status: pendingAgentCashTotal === 0 && lockedAgentsCount === 0 ? 'OK' : 'WARNING',
+          detail:
+            pendingAgentCashTotal === 0
+              ? 'सर्व एजंटकडील रोख शाखेत जमा झाली आहे'
+              : `₹${pendingAgentCashTotal.toLocaleString('en-IN')} रोख फिल्डवर प्रलंबित${lockedAgentsCount > 0 ? ` (${lockedAgentsCount} लॉक)` : ''}`,
+        },
+        {
+          id: 'eod_cash_tally',
+          label: 'शाखा रोख ताळेबंद (Cash Tally)',
+          status: 'OK',
+          detail: `अखेरची रोख ₹${branchCashInHand.toLocaleString('en-IN')} अचूक जुळली`,
+        },
+        {
+          id: 'eod_fd_matured',
+          label: 'मॅच्युअर अनक्लोज्ड FD खाती',
+          status: maturedUnclosedCount === 0 ? 'OK' : 'WARNING',
+          detail:
+            maturedUnclosedCount === 0
+              ? 'कोणतीही मुदतबाह्य FD प्रलंबित नाही'
+              : `${maturedUnclosedCount} FD मुदत पूर्ण होऊनही नूतनीकरण/बंद बाकी`,
+        },
+      ];
+
+      return {
+        branches: DEMO_BRANCHES,
+        portfolio: {
+          branchId,
+          branchName: selectedBranchObj.name,
+          businessDate: selectedBranchObj.businessDate || todayDisplay,
+          eodStatus:
+            pendingVouchersCount === 0 && pendingAgentCashTotal === 0
+              ? 'OPEN'
+              : selectedBranchObj.eodStatus,
+          totalDeposits,
+          totalLoanOutstanding: loanOutstanding,
+          totalLoanOverdue: loanOverdue,
+          npaPercent: avgNpa,
+          cdRatioPercent,
+          branchCashInHand,
+          openingCash,
+          todayReceipts,
+          todayPayments,
+          todayCashCollection,
+          todayUpiCollection,
+          todaysReceiptsCount: collections.length + matchingSeeds.length * 14,
+          totalMembers: sumField((s) => s.totalMembers),
+          fd: {
+            activeAccounts: sumField((s) => s.fdAccounts),
+            totalBalance: fdBalance,
+            extraLabel: 'मॅच्युअर बाकी',
+            extraValue: `${sumField((s) => s.fdMaturedUnclosed)} खाती`,
+          },
+          saving: {
+            activeAccounts: sumField((s) => s.savingAccounts),
+            totalBalance: savingBalance,
+          },
+          pigmy: {
+            activeAccounts: sumField((s) => s.pigmyAccounts) + Math.max(0, accounts.length - DEMO_PIGMI_ACCOUNTS.length),
+            totalBalance: pigmyBalance,
+            extraLabel: 'आज संकलन',
+            extraValue: `₹${(todayCashCollection + todayUpiCollection).toLocaleString('en-IN')}`,
+          },
+          rd: {
+            activeAccounts: sumField((s) => s.rdAccounts),
+            totalBalance: rdBalance,
+          },
+          loan: {
+            activeAccounts: sumField((s) => s.loanAccounts),
+            totalBalance: loanOutstanding,
+            extraLabel: 'थकबाकी',
+            extraValue: `₹${loanOverdue.toLocaleString('en-IN')}`,
+          },
+          shares: {
+            activeAccounts: sumField((s) => s.shareAccounts),
+            totalBalance: sumField((s) => s.shareBalance),
+            extraLabel: 'सभासद',
+            extraValue: `${sumField((s) => s.totalMembers)}`,
+          },
+        },
+        approvals: deepClone(filteredApprovals),
+        agents: deepClone(filteredAgents),
+        overdueLoans: deepClone(filteredOverdue),
+        maturityItems: deepClone(filteredMaturities),
+        eodChecklist,
+      };
+    }
+
+    // Live CBS Mode: gracefully aggregate /api/Dashboard/summary + /api/Dashboard/mobile-admin-summary
+    const branchParam = branchId !== 'ALL' ? { branchId } : undefined;
+    const [dashRes, mobRes] = await Promise.allSettled([
+      apiClient.get('/api/Dashboard/summary', { params: branchParam }),
+      apiClient.get('/api/Dashboard/mobile-admin-summary', { params: branchParam }),
+    ]);
+
+    const dash = dashRes.status === 'fulfilled' ? dashRes.value.data || {} : {};
+    const mob = mobRes.status === 'fulfilled' ? mobRes.value.data || {} : {};
+
+    if (Array.isArray(mob.recentCollections)) {
+      const mappedCols: CollectionRecord[] = mob.recentCollections.map((c: any, idx: number) => ({
+        id: `adm_col_${c.receiptNo || idx}`,
+        transactionId: c.receiptNo || `txn_${idx}`,
+        receiptNo: c.receiptNo || '',
+        accountId: c.accountNumber || '',
+        accountNumber: c.accountNumber || '',
+        customerName: c.customerName || '',
+        agentId: c.agentName || '',
+        agentName: c.agentName || '',
+        amount: Number(c.amount ?? 0),
+        productType: 'PIGMY',
+        paymentMode: c.paymentMode === 'UPI' || c.paymentMode === 'BANK_TRANSFER' ? c.paymentMode : 'CASH',
+        timestamp: c.timestamp ? new Date(c.timestamp).toLocaleString('en-IN') : '',
+        collectionTimestamp: c.timestamp,
+        status: 'VERIFIED',
+        syncStatus: 'SYNCED',
+      }));
+      setCollections(mappedCols);
+    }
+
+    const liveAgents: ManagerAgentControlItem[] = Array.isArray(mob.agents)
+      ? mob.agents.map((a: any) => ({
+          id: a.id || `agt_${a.agentId ?? a.pigmyAgentID ?? ''}`,
+          name: a.name || a.agentName || 'Agent',
+          phone: a.phone || a.mobileNo || '',
+          assignedCustomersCount: Number(a.assignedCustomersCount ?? 0),
+          todayTargetAmount: Number(a.todayTargetAmount ?? 0),
+          todayCollectedAmount: Number(a.todayCollectedAmount ?? 0),
+          pendingCustomersCount: Number(a.pendingCustomersCount ?? 0),
+          status: a.status === 'ACTIVE' ? 'ACTIVE' : a.status === 'ON_FIELD' ? 'ON_FIELD' : 'OFFLINE',
+          branchId: Number(a.branchId ?? 1),
+          branchName: 'Live CBS Branch',
+          cashInHand: Number(a.todayCollectedAmount ?? 0),
+          cashLimit: 20000,
+          todayCashAmount: Number(a.todayCollectedAmount ?? 0),
+          todayUpiAmount: 0,
+          isLocked: false,
+          lastRemittanceDate: '-',
+        }))
+      : [];
+    setAgents(liveAgents);
+
+    const fdBal = Number(dash.fixedDeposit?.totalBalance ?? 0);
+    const savBal = Number(dash.saving?.totalBalance ?? 0);
+    const pigBal = Number(dash.pigmy?.totalBalance ?? mob.totalBalance ?? 0);
+    const rdBal = Number(dash.recurringDeposit?.totalBalance ?? 0);
+    const totalDep = fdBal + savBal + pigBal + rdBal;
+    const loanOut = Number(dash.loan?.principalBalance ?? 0);
+    const loanOvd = Number(dash.loan?.overdueBalance ?? 0);
+    const cdRatio = totalDep > 0 ? Math.round((loanOut / totalDep) * 1000) / 10 : 0;
+    const todaysCol = Number(mob.todaysCollection ?? 0);
+
+    return {
+      branches: [
+        {
+          id: 'ALL',
+          name: currentUser.name || 'Live CBS Branch',
+          shortName: 'Live CBS',
+          code: 'LIVE',
+          eodStatus: 'OPEN',
+          businessDate: todayDisplay,
+        },
+      ],
+      portfolio: {
+        branchId: 'ALL',
+        branchName: currentUser.name || 'Live CBS Branch',
+        businessDate: todayDisplay,
+        eodStatus: 'OPEN',
+        totalDeposits: totalDep,
+        totalLoanOutstanding: loanOut,
+        totalLoanOverdue: loanOvd,
+        npaPercent: loanOut > 0 ? Math.round((loanOvd / loanOut) * 1000) / 10 : 0,
+        cdRatioPercent: cdRatio,
+        branchCashInHand: todaysCol,
+        openingCash: 0,
+        todayReceipts: todaysCol,
+        todayPayments: 0,
+        todayCashCollection: todaysCol,
+        todayUpiCollection: 0,
+        todaysReceiptsCount: Number(mob.todaysReceiptsCount ?? 0),
+        totalMembers: Number(dash.members?.totalMembers ?? 0),
+        fd: {
+          activeAccounts: Number(dash.fixedDeposit?.activeAccounts ?? 0),
+          totalBalance: fdBal,
+          extraLabel: 'मॅच्युअर बाकी',
+          extraValue: `${Number(dash.fixedDeposit?.maturedUnclosedAccounts ?? 0)} खाती`,
+        },
+        saving: {
+          activeAccounts: Number(dash.saving?.activeAccounts ?? 0),
+          totalBalance: savBal,
+        },
+        pigmy: {
+          activeAccounts: Number(dash.pigmy?.activeAccounts ?? mob.activeAccountsCount ?? 0),
+          totalBalance: pigBal,
+          extraLabel: 'आज संकलन',
+          extraValue: `₹${todaysCol.toLocaleString('en-IN')}`,
+        },
+        rd: {
+          activeAccounts: Number(dash.recurringDeposit?.activeAccounts ?? 0),
+          totalBalance: rdBal,
+        },
+        loan: {
+          activeAccounts: Number(dash.loan?.activeAccounts ?? 0),
+          totalBalance: loanOut,
+          extraLabel: 'थकबाकी',
+          extraValue: `₹${loanOvd.toLocaleString('en-IN')}`,
+        },
+        shares: {
+          activeAccounts: Number(dash.shares?.activeAccounts ?? 0),
+          totalBalance: Number(dash.shares?.totalBalance ?? 0),
+          extraLabel: 'सभासद',
+          extraValue: `${Number(dash.members?.totalMembers ?? 0)}`,
+        },
+      },
+      approvals: [],
+      agents: liveAgents,
+      overdueLoans: [],
+      maturityItems: [],
+      eodChecklist: [
+        {
+          id: 'live_sync',
+          label: 'Live CBS जोडणी सक्रिय',
+          status: 'OK',
+          detail: 'मुख्य CBS सर्व्हरवरून आकडेवारी प्राप्त झाली आहे',
+        },
+      ],
+    };
+  };
+
+  const updateManagerApproval = async (
+    id: string,
+    status: ManagerApprovalStatus,
+    remarks?: string
+  ) => {
+    setManagerApprovals((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, status, remarks: remarks || item.remarks } : item
+      )
+    );
+  };
+
+  const toggleManagerAgentLock = async (targetAgentId: string) => {
+    setManagerAgents((prev) =>
+      prev.map((a) =>
+        a.id === targetAgentId
+          ? { ...a, isLocked: !a.isLocked, status: !a.isLocked ? 'OFFLINE' : 'ON_FIELD' }
+          : a
+      )
+    );
+  };
+
+  const acceptManagerAgentRemittance = async (targetAgentId: string, amount: number) => {
+    const cleanAmt = Math.max(0, Number(amount) || 0);
+    if (cleanAmt <= 0) return;
+    const target = managerAgents.find((a) => a.id === targetAgentId);
+    const settled = target ? Math.min(target.cashInHand, cleanAmt) : cleanAmt;
+
+    setManagerAgents((prev) =>
+      prev.map((a) => {
+        if (a.id !== targetAgentId) return a;
+        const remainingCash = Math.max(0, a.cashInHand - settled);
+        return {
+          ...a,
+          cashInHand: remainingCash,
+          isLocked: remainingCash > a.cashLimit ? a.isLocked : false,
+          status: remainingCash > a.cashLimit ? a.status : 'ON_FIELD',
+          lastRemittanceDate: 'आत्ताच जमा',
+        };
+      })
+    );
+
+    if (target) {
+      setManagerRemittedCashByBranch((prev) => ({
+        ...prev,
+        [target.branchId]: (prev[target.branchId] || 0) + settled,
+      }));
+    }
+  };
+
   const fetchCustomerPortalOverview = async () => {
+    if (isDemoMode) {
+      const { pigmyAccounts, savingAccounts, rdAccounts, fdAccounts, loanAccounts } = demoPortalAccounts;
+      const totalSavingsAndDeposits = [
+        ...pigmyAccounts,
+        ...savingAccounts,
+        ...rdAccounts,
+        ...fdAccounts,
+      ].reduce((sum, a) => sum + Number(a.balance || 0), 0);
+      const totalLoanOutstanding = loanAccounts.reduce((sum, a) => sum + Number(a.balance || 0), 0);
+      return {
+        summary: {
+          ...DEMO_CUSTOMER_PORTAL_DATA.customerInfo,
+          totalSavingsAndDeposits,
+          totalLoanOutstanding,
+          counts: {
+            pigmy: pigmyAccounts.length,
+            saving: savingAccounts.length,
+            rd: rdAccounts.length,
+            fd: fdAccounts.length,
+            loan: loanAccounts.length,
+          },
+        },
+        accounts: deepClone(demoPortalAccounts),
+      };
+    }
     const [sumRes, accRes] = await Promise.all([
       apiClient.get('/api/customer/summary'),
       apiClient.get('/api/customer/accounts'),
@@ -1848,13 +2842,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const fetchCustomerAccountPassbook = async (productType: string, accountId: number) => {
+    if (isDemoMode) {
+      const key = `${productType.toUpperCase()}_${accountId}`;
+      const existing = demoPassbooks[key];
+      if (existing) {
+        return deepClone(existing);
+      }
+      return {
+        productType,
+        accountNo: String(accountId),
+        currentBalance: 0,
+        transactions: [],
+      };
+    }
     const res = await apiClient.get(`/api/customer/passbook/${productType}/${accountId}`);
     return res.data;
   };
 
   // Save today's collection history to local storage so they remain in "Collected" tab even after sync
   useEffect(() => {
-    if (!isAuthenticated || currentRole !== 'AGENT' || collections.length === 0) return;
+    if (!isAuthenticated || currentRole !== 'AGENT' || isDemoMode || collections.length === 0) return;
     const todayStr = new Date().toLocaleDateString();
     const todaysCollections = collections.filter(c => c.timestamp.startsWith(todayStr));
     if (todaysCollections.length > 0) {
@@ -1867,11 +2874,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       AsyncStorage.setItem('TODAYS_COLLECTIONS_HISTORY', JSON.stringify(deduped)).catch(e => console.log(e));
     }
-  }, [collections, isAuthenticated]);
+  }, [collections, isAuthenticated, isDemoMode]);
 
   // Automatic Background Sync Listener (Agent only)
   useEffect(() => {
-    if (!isAuthenticated || currentRole !== 'AGENT') return;
+    if (!isAuthenticated || currentRole !== 'AGENT' || isDemoMode) return;
 
     const handleNetworkChange = (state: any) => {
       if (state.isConnected) {
@@ -1892,20 +2899,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubscribeNetInfo();
       appStateSubscription.remove();
     };
-  }, [isAuthenticated, agentId]);
+  }, [isAuthenticated, agentId, isDemoMode]);
 
   return (
     <AuthContext.Provider
       value={{
         isAuthenticated,
+        isDemoMode,
         currentRole,
         currentUser,
         login,
+        loginDemo,
+        switchDemoRole,
         logout,
         accounts,
         collections,
         agents,
         agentCustomers,
+        managerApprovals,
+        managerAgents,
+        fetchManagerCommandData,
+        updateManagerApproval,
+        toggleManagerAgentLock,
+        acceptManagerAgentRemittance,
         fetchAgentProfile,
         fetchAgentAccounts,
         fetchAgentCustomers,

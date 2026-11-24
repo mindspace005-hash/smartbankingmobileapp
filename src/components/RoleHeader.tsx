@@ -1,16 +1,23 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { LogOut, Palette, Globe } from 'lucide-react-native';
+import { LogOut, Palette, Globe, Sparkles } from 'lucide-react-native';
 import { useThemeColors } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { CONFIG } from '../config';
 import { NetworkIndicator } from './NetworkIndicator';
 import { RADIUS } from '../theme/tokens';
+import { UserRole } from '../types';
 import { triggerLightHaptic } from '../utils/haptics';
 
+const DEMO_ROLE_OPTIONS: { key: UserRole; label: string }[] = [
+  { key: 'AGENT', label: 'पिग्मी एजंट' },
+  { key: 'ADMIN', label: 'मॅनेजर' },
+  { key: 'CUSTOMER', label: 'खातेदार' },
+];
+
 export const RoleHeader: React.FC = () => {
-  const { currentRole, currentUser, logout } = useAuth();
+  const { currentRole, currentUser, isDemoMode, switchDemoRole, logout } = useAuth();
   const { colors, language, toggleTheme, toggleLanguage } = useThemeColors();
 
   const initials = (currentUser.name || 'AG')
@@ -20,7 +27,7 @@ export const RoleHeader: React.FC = () => {
     .map((p) => p[0]?.toUpperCase() || '')
     .join('');
 
-  const roleBadge = currentRole === 'ADMIN' ? 'Admin' : currentRole === 'AGENT' ? 'Agent' : 'Member';
+  const roleBadge = currentRole === 'ADMIN' ? 'Manager' : currentRole === 'AGENT' ? 'Agent' : 'Khatedar';
 
   return (
     <LinearGradient
@@ -88,6 +95,47 @@ export const RoleHeader: React.FC = () => {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Instant 1-Tap Demo Portal Switcher */}
+      {isDemoMode && (
+        <View style={styles.demoStrip}>
+          <View style={styles.demoBadge}>
+            <Sparkles size={11} color="#FDE68A" />
+            <Text style={styles.demoBadgeText}>DEMO</Text>
+          </View>
+          <View style={styles.demoSwitchRow}>
+            {DEMO_ROLE_OPTIONS.map((opt) => {
+              const active = currentRole === opt.key;
+              return (
+                <TouchableOpacity
+                  key={opt.key}
+                  style={[
+                    styles.demoPill,
+                    active && { backgroundColor: '#FFFFFF' },
+                  ]}
+                  onPress={() => {
+                    if (!active) {
+                      triggerLightHaptic();
+                      switchDemoRole(opt.key);
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Text
+                    style={[
+                      styles.demoPillText,
+                      { color: active ? colors.primaryDark : 'rgba(255,255,255,0.88)' },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+      )}
     </LinearGradient>
   );
 };
@@ -96,7 +144,7 @@ const styles = StyleSheet.create({
   container: {
     paddingHorizontal: 14,
     paddingTop: 10,
-    paddingBottom: 12,
+    paddingBottom: 10,
   },
   inner: {
     flexDirection: 'row',
@@ -190,5 +238,51 @@ const styles = StyleSheet.create({
   logoutIconBtn: {
     backgroundColor: 'rgba(239, 68, 68, 0.22)',
     borderColor: 'rgba(248, 113, 113, 0.4)',
+  },
+  demoStrip: {
+    marginTop: 9,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.16)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  demoBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: RADIUS.pill,
+    backgroundColor: 'rgba(251, 191, 36, 0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(253, 230, 138, 0.5)',
+  },
+  demoBadgeText: {
+    color: '#FEF3C7',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  demoSwitchRow: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0,0,0,0.16)',
+    borderRadius: RADIUS.pill,
+    padding: 2,
+    gap: 2,
+  },
+  demoPill: {
+    flex: 1,
+    paddingVertical: 5,
+    paddingHorizontal: 6,
+    borderRadius: RADIUS.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  demoPillText: {
+    fontSize: 11,
+    fontWeight: '800',
   },
 });

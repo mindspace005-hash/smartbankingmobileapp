@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -508,6 +508,12 @@ export const CreateCustomerModal: React.FC<CreateCustomerModalProps> = ({
   const [saving, setSaving] = useState(false);
 
   const selectedScheme = schemes.find((s) => s.schemeId === schemeId) || schemes[0];
+
+  useEffect(() => {
+    if (schemes.length > 0 && !schemes.some((s) => s.schemeId === schemeId)) {
+      setSchemeId(schemes[0].schemeId);
+    }
+  }, [schemes, schemeId]);
 
   const handleSave = async () => {
     setSaving(true);

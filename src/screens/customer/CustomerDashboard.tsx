@@ -156,7 +156,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = () => {
           <View style={styles.heroTopRow}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.heroTag, { color: colors.headerSubtext }]}>
-                {summary?.branchName || 'KHATEDAR TEST PORTAL'}
+                {summary?.branchName || 'खातेदार डिजिटल पोर्टल'}
               </Text>
               <Text style={styles.heroName} numberOfLines={1}>
                 {summary?.customerName || currentUser.name || 'खातेदार'}
@@ -216,7 +216,7 @@ export const CustomerDashboard: React.FC<CustomerDashboardProps> = () => {
         <View style={[styles.infoBanner, { backgroundColor: colors.infoBg, borderColor: colors.border }]}>
           <Info size={16} color={colors.infoText} />
           <Text style={{ flex: 1, fontSize: 12, color: colors.infoText, fontWeight: '600' }}>
-            हे तात्पुरते खातेदार टेस्ट पोर्टल (Read-Only) आहे. पासबुक पाहण्यासाठी कोणत्याही खात्यावर टॅप करा.
+            तुमच्या सर्व खात्यांची अद्ययावत माहिती व डिजिटल पासबुक इथे उपलब्ध आहे. पासबुक पाहण्यासाठी कोणत्याही खात्यावर टॅप करा.
           </Text>
         </View>
 
